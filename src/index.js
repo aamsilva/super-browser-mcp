@@ -452,6 +452,8 @@ async function main() {
 let db = null;
 try {
   db = new (require("node:sqlite").DatabaseSync)(path.join(__dirname, "..", "capabilities_state.db"));
+  db.exec("PRAGMA journal_mode=WAL");
+  db.exec("PRAGMA busy_timeout=3000");
   db.exec("CREATE TABLE IF NOT EXISTS calls (id INTEGER PRIMARY KEY, ts REAL, tool TEXT, ok INTEGER, latency_ms REAL, error TEXT, caller TEXT, method TEXT, params TEXT, result TEXT, source TEXT, result_type TEXT, result_summary TEXT)");
 } catch { db = null; }
 function mcpLogCall(tool, ok, ms, error, params, result) {

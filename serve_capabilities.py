@@ -70,6 +70,8 @@ TOOLS_WITH_EXAMPLES = [(t, _tool_examples().get(t, {}), d) for t, d in TOOLS]
 # Traceability completa: quem (caller), como (method), parâmetros (params),
 # tempo, resultado, dados.
 conn = sqlite3.connect(f"{ROOT}/capabilities_state.db", check_same_thread=False)
+conn.execute("PRAGMA journal_mode=WAL")
+conn.execute("PRAGMA busy_timeout=3000")
 conn.execute("""CREATE TABLE IF NOT EXISTS calls (
   id INTEGER PRIMARY KEY, ts REAL, tool TEXT, ok INTEGER, latency_ms REAL, error TEXT,
   caller TEXT, method TEXT, params TEXT, result TEXT,
