@@ -293,7 +293,10 @@ server.tool("scrape_stealth", "Scraping stealth via CloakBrowser — passa Cloud
         timeout: CFG.timeoutMs, encoding: "utf8", maxBuffer: 10 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
       });
       const d = JSON.parse(out.trim());
-      return { content: [{ type: "text", text: JSON.stringify({ ok: true, title: d.title, len: d.len, url: d.url }) }] };
+      // devolver o HTML renderizado (o markup), não só metadata — para inspeção.
+      // cap a 100KB no output (o len total fica em len).
+      const htmlCap = (d.html || "").slice(0, 100000);
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, title: d.title, len: d.len, url: d.url, html: htmlCap, html_inspecionavel: htmlCap.length > 0 }) }] };
     } catch (e) {
       const msg = (e.stdout || e.message || "").toString().trim();
       return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: msg.slice(0, 200) }) }] };

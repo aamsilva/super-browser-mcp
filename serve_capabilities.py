@@ -282,17 +282,33 @@ keys.forEach(k=>{const inp=document.createElement('input');inp.placeholder=k;
 // serializar valor inicial como JSON (objetos -> '{"url":...}', numeros -> "3")
 inp.value=typeof t.args[k]==='object'?JSON.stringify(t.args[k]):String(t.args[k]);inp.dataset.k=k;d.appendChild(inp);});
 const b=document.createElement('button');b.textContent='▶ Chamar';const pre=document.createElement('pre');pre.style.display='none';const st=d.querySelector('.status');
+const fullBtn=document.createElement('button');fullBtn.textContent='📄 Ver markup completo';fullBtn.style.display='none';fullBtn.style.marginLeft='6px';
+let lastRaw='';
 b.onclick=async()=>{const args={};d.querySelectorAll('input').forEach(i=>args[i.dataset.k]=i.value);b.disabled=true;st.textContent='a correr…';st.className='status running';pre.style.display='block';pre.textContent='Chamando '+t.name+' …';
 try{const r=await fetch('/api/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:t.name,args})});const j=await r.json();
 const ok=!!j.ok;st.textContent=ok?'✓ OK — '+j.latency_ms+'ms':'✗ FAIL — '+j.latency_ms+'ms';st.className='status '+(ok?'idle':'idle');
-pre.textContent=(ok?'✓ OK':'✗ FAIL')+' — '+j.latency_ms+'ms\\n'+JSON.stringify(j.result||j.error,null,1).slice(0,2500);}catch(e){st.textContent='erro';st.className='status idle';pre.textContent='ERRO: '+e.message;}
+lastRaw=JSON.stringify(j.result||j.error,null,1);pre.textContent=(ok?'✓ OK':'✗ FAIL')+' — '+j.latency_ms+'ms\\n'+lastRaw.slice(0,2500);
+fullBtn.style.display=lastRaw.length>2500?'inline-block':'none';}catch(e){st.textContent='erro';st.className='status idle';pre.textContent='ERRO: '+e.message;fullBtn.style.display='none';}
 b.disabled=false;snap();hist();};
-d.appendChild(b);d.appendChild(pre);toolsEl.appendChild(d);});
+fullBtn.onclick=()=>{document.getElementById('modal').style.display='flex';
+document.getElementById('modal-title').textContent=t.name+' — markup completo ('+lastRaw.length+' chars)';
+document.getElementById('modal-body').textContent=lastRaw;};
+d.appendChild(b);d.appendChild(fullBtn);d.appendChild(pre);toolsEl.appendChild(d);});
 async function hist(){try{const r=await fetch('/api/history');const rows=await r.json();
 document.getElementById('hist').innerHTML='<tr><th>Hora</th><th>Source</th><th>Caller</th><th>Tool</th><th>Resultado</th><th>Latência</th><th>Resumo</th></tr>'+rows.map(x=>`<tr><td>${x.ts}</td><td>${x.source||'?'}</td><td>${x.caller||'?'}</td><td>${x.tool}</td><td class="${x.ok?'ok-tag':'fail-tag'}">${x.ok?'OK':'FAIL'}</td><td>${Math.round(x.latency_ms)}ms</td><td title="${(x.summary||'').replace(/"/g,'&quot;')}">${(x.summary||'').slice(0,40)}</td></tr>`).join('');}catch(e){}}
 document.getElementById('footer').textContent='super-browser-mcp v1.0 · serve_capabilities.py · ' + new Date().toISOString().slice(0,10);
 snap();hist();setInterval(snap,15000);
-</script></body></html>"""
+</script>
+<div id="modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:999;align-items:center;justify-content:center">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;width:90%;max-width:1000px;max-height:90vh;display:flex;flex-direction:column;overflow:hidden">
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border)">
+      <span id="modal-title" style="font-family:var(--font-mono);font-size:13px"></span>
+      <button onclick="document.getElementById('modal').style.display='none'" style="background:transparent;border:1px solid var(--border);color:var(--text)">✕ Fechar</button>
+    </div>
+    <pre id="modal-body" style="flex:1;overflow:auto;max-height:none;margin:0;border:0;border-radius:0;white-space:pre-wrap;word-break:break-word;padding:16px"></pre>
+  </div>
+</div>
+</body></html>"""
 
 # TOOLS_JSON injetado via replace() (a string é literal, não f-string — senão os
 # { } do JS/CSS conflitam com a interpolação Python).
