@@ -48,7 +48,15 @@ O X/Twitter, Google, YouTube e Reddit exigem sessões humanas persistentes. Um V
 | `auth_status` | opencli auth status | — | estado de sessão por site (parser, pode estar desatualizado) |
 | `auth_check` | navegação (página só-autenticada) | — | **auth fiável**: abre /settings e verifica se redireciona para login |
 | `scrape_stealth` | CloakBrowser | **Stealth** | scraping Cloudflare/anti-bot (HTML renderizado) |
+| `browser_agent` | agent-browser (headless) | **Sessões próprias** | amazon/booking/polymarket (onde o opencli não tem sessão) — open/snapshot/fill/click/press |
 | `health` | opencli whoami | — | estado do bridge autenticado |
+
+### Sessões agent-browser (browser_agent)
+Cobre sites onde o opencli **não** tem sessão (sessões vivem em `~/.agent-browser/<nome>`):
+- **amazon** (es/com, orders autenticado) — verificado 15-Ago: 4 ordens extraídas via MCP
+- **booking1**, **polymarket**, **default**
+
+Uso: `browser_agent {action:"open", url, session:"amazon"}` → `{action:"snapshot"}` → extrai conteúdo.
 
 ### Auth fiável (quem validar sessão)
 

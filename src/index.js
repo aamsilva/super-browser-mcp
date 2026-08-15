@@ -289,7 +289,44 @@ server.tool("browser_act", `Executa uma ação de automação browser no Chrome 
     }
   });
 
-// ---- Scraping stealth (CloakBrowser — passa Cloudflare/anti-bot) ----
+// ---- agent-browser (headless, sessões próprias — cobre amazon/booking/polymarket
+//      onde o opencli não tem sessão). As sessões vivem em ~/.agent-browser/<nome>.
+//      agent-browser usa a SUA convenção (--session-name, snapshot/refs). ----
+const AGENT_BIN = "/opt/homebrew/bin/agent-browser";
+function agentExec(args, { timeout = CFG.timeoutMs } = {}) {
+  const out = execFileSync(AGENT_BIN, args, {
+    timeout, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
+  });
+  return out;
+}
+server.tool("browser_agent", "Automação browser via agent-browser (headless, sessões próprias). Cobre sites onde o opencli NÃO tem sessão (ex: amazon, booking, polymarket — sessões em ~/.agent-browser/<nome>). Ações: open (abrir URL com sessão), snapshot (ver estado da página), fill/type (preencher), click, press (teclas), scroll. STATE-FUL por sessão: usar session=<nome> (ex: amazon) para reutilizar cookies persistidos.",
+  { action: z.string().describe("Ação: open | snapshot | fill | type | click | press | scroll"), url: z.string().optional().describe("URL (para action:open)"), selector: z.string().optional().describe("Seletor CSS ou @ref (para click/fill/type)"), text: z.string().optional().describe("Texto (para fill/type)"), key: z.string().optional().describe("Tecla (para press, ex: Enter)"), session: z.string().optional().describe("Sessão agent-browser (ex: amazon, booking1, polymarket, default)") },
+  async ({ action, url, selector, text, key, session = "default" }) => {
+    try {
+      let out;
+      if (action === "open") {
+        out = agentExec(["open", url, "--session-name", session]);
+      } else if (action === "snapshot") {
+        out = agentExec(["snapshot", "--session-name", session]);
+      } else if (action === "fill") {
+        out = agentExec(["fill", selector, text, "--session-name", session]);
+      } else if (action === "type") {
+        out = agentExec(["type", selector, text, "--session-name", session]);
+      } else if (action === "click") {
+        out = agentExec(["click", selector, "--session-name", session]);
+      } else if (action === "press") {
+        out = agentExec(["press", key, "--session-name", session]);
+      } else if (action === "scroll") {
+        out = agentExec(["scroll", text || "down", "--session-name", session]);
+      } else {
+        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: `Ação inválida: ${action}. Disponíveis: open, snapshot, fill, type, click, press, scroll` }) }] };
+      }
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, output: out.slice(0, 20000) }) }] };
+    } catch (e) {
+      const msg = (e.stdout || e.message || "").toString().trim();
+      return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: msg.slice(0, 300) }) }] };
+    }
+  });
 const CLOAK_SCRIPT = (url, maxBytes) => `
 import asyncio, cloakbrowser, json
 async def main():

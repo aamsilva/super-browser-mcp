@@ -77,7 +77,12 @@
       "auth_check": {
         "site": "github"
       },
-      "auth_status": {}
+      "auth_status": {},
+      "browser_agent": {
+        "action": "open",
+        "url": "https://www.amazon.es/gp/css/order-history",
+        "session": "amazon"
+      }
     }
   }
 }
