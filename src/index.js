@@ -367,14 +367,19 @@ server.tool("browser_act", `Executa uma ação de automação browser no Chrome 
           }
         } catch { /* se não conseguir listar, abrir mesmo assim */ }
       }
-      const d = browserExec(action, args, session, windowMode);
+      // BUG 1/2 fix (feedback T2 23:27): keep é flag interna (não vai ao opencli).
+      const keep = args.keep;
+      const { keep: _keep, ...execArgs } = args || {};
+      const d = browserExec(action, execArgs, session, windowMode);
       // AUTO-CLOSE (regra user 15-Ago): ações de LEITURA consomem a info e fecham
       // a tab IMEDIATAMENTE (minimizar tempo aberto = memória). Ações interativas
       // (open/fill/click/type/wait) NÃO fecham — o agente precisa da sessão ativa.
       // REGRA MASTER: o close NUNCA fecha a sessão principal se ela é a master
       // (DEFAULT_SESSION) — fechar todas as tabs mataria a comunicação do bridge.
+      // BUG 1 fix (feedback T2 23:27): args.keep=true desativa o auto-close —
+      // permite multi-step open→eval→eval na MESMA sessão (rdk_board loop de eval).
       const READ_ACTIONS = new Set(["extract", "state", "eval", "screenshot", "get", "tab"]);
-      if (READ_ACTIONS.has(action) && CFG.autoCloseRead) {
+      if (READ_ACTIONS.has(action) && CFG.autoCloseRead && !keep) {
         const isMaster = session === DEFAULT_SESSION;
         if (!isMaster) {
           // sessão de teste/efémera → fechar tudo
@@ -386,7 +391,10 @@ server.tool("browser_act", `Executa uma ação de automação browser no Chrome 
           const check = browserExec("tab", { action: "list" }, session);
           remaining = String(check).match(/"index"/g) ? String(check).match(/"index"/g).length : (isMaster ? 1 : 0);
         } catch { remaining = isMaster ? 1 : 0; }
-        return { content: [{ type: "text", text: JSON.stringify({ ...d, auto_closed: !isMaster, master_preserved: isMaster, tabs_remaining: remaining }) }] };
+        // BUG 2 fix (feedback T2 23:27): eval devolve número/booleano → JSON.parse dá
+        // tipo primitivo e o spread {...d} perde o valor. Normalizar p/ {value}.
+        const payload = (typeof d === "object" && d !== null) ? d : { value: d };
+        return { content: [{ type: "text", text: JSON.stringify({ ...payload, auto_closed: !isMaster, master_preserved: isMaster, tabs_remaining: remaining }) }] };
       }
       return { content: [{ type: "text", text: JSON.stringify(d) }] };
     } catch (e) {
