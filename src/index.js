@@ -358,6 +358,13 @@ server.tool("browser_act", `Executa uma ação de automação browser no Chrome 
   { action: z.string().describe(`Ação: ${ACTIONS_LIST.join(" | ")}`), args: z.record(z.any()).optional().describe("Argumentos da ação (ver schema de cada ação)"), session: z.string().optional().describe("Nome da sessão browser (default mcp-main; usar diferente para isolamento)"), window: z.string().optional().describe("Modo da janela: background (default, invisível) ou foreground (VISÍVEL — para auth manual pelo utilizador)") },
   async ({ action, args = {}, session = DEFAULT_SESSION, window: windowMode }) => {
     if (!BROWSER_ACTIONS[action]) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: `Ação inválida: ${action}. Disponíveis: ${ACTIONS_LIST.join(", ")}` }) }] };
+    // ALIAS eval (feedback T2 16-Ago 00:15): aceitar code/expression/script como js —
+    // 39 falhas na telemetria eram contratos errados ('code' em vez de 'js').
+    if (action === "eval" && args && args.js === undefined) {
+      for (const alias of ["code", "expression", "script"]) {
+        if (args[alias] !== undefined) { args.js = args[alias]; delete args[alias]; break; }
+      }
+    }
     // P1-2 fix (feedback T2 15-Ago): registo de sessions conhecidas → tab list pode
     // agregar todas as sessions (verificar auto-close cross-session), não só a master.
     KNOWN_SESSIONS.add(session);
@@ -522,17 +529,21 @@ server.tool("web_search", "Pesquisa web: Google (opencli, autenticado) PRIMÁRIO
       }));
       if (items.length > 0) return { content: [{ type: "text", text: JSON.stringify({ engine: "google", results: items }) }] };
     } catch { /* google falhou -> searxng fallback */ }
-    // 2. Searxng fallback (multi-engine)
-    try {
-      const res = await fetch(`${CFG.searxngUrl}/search?q=${encodeURIComponent(query)}&format=json`);
-      const d = await res.json();
-      const items = (d.results || []).slice(0, limit).map(r => ({
-        title: r.title, url: r.url, snippet: (r.content || "").slice(0, 200),
-      }));
-      if (items.length > 0) return { content: [{ type: "text", text: JSON.stringify({ engine: "searxng", results: items }) }] };
-      const degraded = Array.isArray(d.unresponsive_engines) && d.unresponsive_engines.length > 0 || !d.results;
-      if (degraded) return { content: [{ type: "text", text: JSON.stringify({ ok: false, degraded: true, error: "google+searxng sem resultados", engine: "searxng" }) }] };
-    } catch {}
+    // 2. Searxng fallback (multi-engine) — RETRY 1x (feedback T2 16-Ago 00:15:
+    // 33% das falhas são searxng 'engines suspensas/rate-limit' — retry recupera).
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetch(`${CFG.searxngUrl}/search?q=${encodeURIComponent(query)}&format=json`);
+        const d = await res.json();
+        const items = (d.results || []).slice(0, limit).map(r => ({
+          title: r.title, url: r.url, snippet: (r.content || "").slice(0, 200),
+        }));
+        if (items.length > 0) return { content: [{ type: "text", text: JSON.stringify({ engine: "searxng", results: items, retries: attempt }) }] };
+        const degraded = Array.isArray(d.unresponsive_engines) && d.unresponsive_engines.length > 0 || !d.results;
+        if (degraded) { await new Promise(r => setTimeout(r, 500)); continue; } // retry após pausa
+      } catch { await new Promise(r => setTimeout(r, 500)); }
+    }
+    return { content: [{ type: "text", text: JSON.stringify({ ok: false, degraded: true, error: "google+searxng sem resultados (searxng retry 2x)", engine: "searxng" }) }] };
     return { content: [{ type: "text", text: JSON.stringify({ ok: false, degraded: true, error: "google+searxng ambos falharam" }) }] };
   });
 
