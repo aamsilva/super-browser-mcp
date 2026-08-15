@@ -62,7 +62,17 @@
       "scrape_stealth": {
         "url": "https://expresso.pt"
       },
-      "health": {}
+      "health": {},
+      "site_search": {
+        "site": "youtube",
+        "command": "search",
+        "query": "MCP",
+        "limit": 2
+      },
+      "auth_check": {
+        "site": "github"
+      },
+      "auth_status": {}
     }
   }
 }

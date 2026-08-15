@@ -13,6 +13,11 @@ ponytail: http.server + stdlib apenas (0 deps). Estado em JSON local.
 import http.server, json, os, subprocess, time, threading, sqlite3
 from urllib.parse import urlparse, parse_qs
 
+# Fix PATH (15-Ago): quando invocado pelo launchd, o PATH é mínimo (/usr/bin:/bin)
+# sem node/opencli — o opencli faz `env node` internamente e o dashboard reportava
+# bridge DOWN mesmo com o bridge UP. Exportar PATH completo.
+os.environ["PATH"] = os.path.expanduser("~/.opencode/bin:/opt/homebrew/bin:/usr/local/bin:") + os.environ.get("PATH", "")
+
 PORT = 8097
 ROOT = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = f"{ROOT}/capabilities_state.json"
@@ -44,6 +49,7 @@ def _tool_examples():
     except Exception:
         return {}
 TOOLS = [
+    ("site_search", "Busca num site específico (youtube/google/twitter/reddit/bbc/hn)"),
     ("finance_quote", "Preço de ação (barchart)"),
     ("finance_options", "Options chain + greeks"),
     ("finance_crypto", "Preço crypto (binance)"),
@@ -53,6 +59,8 @@ TOOLS = [
     ("browser_act", "Automação browser (fill/click/type)"),
     ("web_search", "Pesquisa web multi-motor"),
     ("scrape_stealth", "Scraping stealth (Cloudflare)"),
+    ("auth_status", "Estado de sessão por site"),
+    ("auth_check", "Valida auth por navegação (fiável)"),
     ("health", "Estado do bridge"),
 ]
 TOOLS_WITH_EXAMPLES = [(t, _tool_examples().get(t, {}), d) for t, d in TOOLS]
@@ -64,18 +72,41 @@ TOOLS_WITH_EXAMPLES = [(t, _tool_examples().get(t, {}), d) for t, d in TOOLS]
 conn = sqlite3.connect(f"{ROOT}/capabilities_state.db", check_same_thread=False)
 conn.execute("""CREATE TABLE IF NOT EXISTS calls (
   id INTEGER PRIMARY KEY, ts REAL, tool TEXT, ok INTEGER, latency_ms REAL, error TEXT,
-  caller TEXT, method TEXT, params TEXT, result TEXT)""")
+  caller TEXT, method TEXT, params TEXT, result TEXT,
+  source TEXT, result_type TEXT, result_summary TEXT)""")
 # migração: adicionar colunas se não existirem (BD antiga)
-for col in ("caller", "method", "params", "result"):
+for col in ("caller", "method", "params", "result", "source", "result_type", "result_summary"):
     try:
         conn.execute(f"ALTER TABLE calls ADD COLUMN {col} TEXT")
     except sqlite3.OperationalError:
         pass  # já existe
 conn.commit()
 
-def log_call(tool, ok, ms, error="", caller="webui", method="mcp-stdio", params="", result=""):
-    conn.execute("INSERT INTO calls (ts, tool, ok, latency_ms, error, caller, method, params, result) VALUES (?,?,?,?,?,?,?,?,?)",
-                 (time.time(), tool, 1 if ok else 0, ms, (error or "")[:300], caller, method, (params or "")[:300], (result or "")[:500]))
+def _summarize(tool, out):
+    """Resumo legível do output por tool (1 linha)."""
+    try:
+        j = json.loads(out) if out else None
+    except Exception:
+        j = None
+    if isinstance(j, list):
+        return f"{len(j)} itens"
+    if isinstance(j, dict):
+        if "error" in j: return f"erro: {str(j['error'])[:60]}"
+        if j.get("authenticated") is not None: return f"authenticated={j['authenticated']}"
+        if j.get("logged_in") is not None: return f"logged_in={j['logged_in']}"
+        if "title" in j and "len" in j: return f"{j['title'][:30]} ({j['len']}B)"
+        if "price" in j: return f"price={j['price']}"
+        if "ok" in j: return f"ok={j['ok']}"
+        return ", ".join(f"{k}={str(v)[:15]}" for k, v in list(j.items())[:3])
+    if out:
+        return out[:80].replace("\n", " ")
+    return "(sem output)"
+
+def log_call(tool, ok, ms, error="", caller="webui", method="mcp-stdio", params="", result="", source="api"):
+    conn.execute("""INSERT INTO calls (ts, tool, ok, latency_ms, error, caller, method, params, result, source, result_type, result_summary)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 (time.time(), tool, 1 if ok else 0, ms, (error or "")[:300], caller, method, (params or "")[:300], (result or "")[:500],
+                  source, "ok" if ok else "error", _summarize(tool, result)[:120]))
     conn.commit()
 
 def state_snapshot():
@@ -118,9 +149,35 @@ def state_snapshot():
         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
 
+def _coerce(v):
+    """Converte strings da webui em tipos nativos: "3"→3, '{"a":1}'→dict, true→bool."""
+    if isinstance(v, dict):
+        return {k: _coerce(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_coerce(x) for x in v]
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return v
+        if s.lower() in ("true", "false"):
+            return s.lower() == "true"
+        if s.lstrip("-").isdigit():
+            return int(s)
+        try:
+            if s[0] in "[{":
+                import ast as _ast
+                return _ast.literal_eval(s)
+        except (ValueError, SyntaxError):
+            pass
+    return v
+
 def call_tool(name, args, caller="webui"):
     """Chama uma tool MCP via subprocess (cliente MCP simples over stdio).
-    Traceability: regista quem (caller), como (method), parâmetros, resultado."""
+    Traceability: regista quem (caller), como (method), parâmetros, resultado.
+    Coerce de tipos: a webui envia tudo como string ("3", "NVDA", {"a":"b"}).
+    Converter strings numéricas → number e strings JSON → objetos, para o zod
+    do MCP aceitar (sem isto dá MCP error -32602 Invalid arguments)."""
+    args = _coerce(args)
     t0 = time.time()
     try:
         p = subprocess.Popen([MCP_BIN], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -220,7 +277,9 @@ const TOOLS=__TOOLS_JSON__;
 const toolsEl=document.getElementById('tools');
 TOOLS.forEach(t=>{const d=document.createElement('div');d.className='card';d.innerHTML=`<h3>${t.name}</h3><div class="desc">${t.desc}</div><span class="status idle">idle</span>`;
 const keys=Object.keys(t.args);
-keys.forEach(k=>{const inp=document.createElement('input');inp.placeholder=k;inp.value=t.args[k];inp.dataset.k=k;d.appendChild(inp);});
+keys.forEach(k=>{const inp=document.createElement('input');inp.placeholder=k;
+// serializar valor inicial como JSON (objetos -> '{"url":...}', numeros -> "3")
+inp.value=typeof t.args[k]==='object'?JSON.stringify(t.args[k]):String(t.args[k]);inp.dataset.k=k;d.appendChild(inp);});
 const b=document.createElement('button');b.textContent='▶ Chamar';const pre=document.createElement('pre');pre.style.display='none';const st=d.querySelector('.status');
 b.onclick=async()=>{const args={};d.querySelectorAll('input').forEach(i=>args[i.dataset.k]=i.value);b.disabled=true;st.textContent='a correr…';st.className='status running';pre.style.display='block';pre.textContent='Chamando '+t.name+' …';
 try{const r=await fetch('/api/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:t.name,args})});const j=await r.json();
@@ -252,11 +311,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif u.path == "/api/state":
             self._json(state_snapshot())
         elif u.path == "/api/history":
-            rows = [{"ts": time.strftime("%H:%M:%S", time.localtime(r[0])), "tool": r[1], "ok": bool(r[2]), "latency_ms": r[3], "caller": r[4] or "?", "method": r[5] or "?", "params": (r[6] or "")[:80]} for r in conn.execute("SELECT ts, tool, ok, latency_ms, caller, method, params FROM calls ORDER BY id DESC LIMIT 30")]
+            rows = [{"ts": time.strftime("%H:%M:%S", time.localtime(r[0])), "tool": r[1], "ok": bool(r[2]), "latency_ms": r[3], "caller": r[4] or "?", "method": r[5] or "?", "params": (r[6] or "")[:80], "summary": r[7] or ""} for r in conn.execute("SELECT ts, tool, ok, latency_ms, caller, method, params, result_summary FROM calls ORDER BY id DESC LIMIT 30")]
             self._json(rows)
         elif u.path == "/api/trace":
-            # traceability completa: quem, como, params, tempo, resultado, erro
-            rows = [{"id": r[0], "ts": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r[1])), "tool": r[2], "ok": bool(r[3]), "latency_ms": round(r[4], 1), "error": r[5] or "", "caller": r[6] or "?", "method": r[7] or "?", "params": r[8] or "", "result": (r[9] or "")[:300]} for r in conn.execute("SELECT id, ts, tool, ok, latency_ms, error, caller, method, params, result FROM calls ORDER BY id DESC LIMIT 100")]
+            # traceability completa: quem, como, params, tempo, resultado, resumo
+            rows = [{"id": r[0], "ts": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r[1])), "tool": r[2], "ok": bool(r[3]), "latency_ms": round(r[4], 1), "error": r[5] or "", "caller": r[6] or "?", "method": r[7] or "?", "params": r[8] or "", "result": (r[9] or "")[:300], "source": r[10] or "?", "result_type": r[11] or "?", "summary": r[12] or ""} for r in conn.execute("SELECT id, ts, tool, ok, latency_ms, error, caller, method, params, result, source, result_type, result_summary FROM calls ORDER BY id DESC LIMIT 100")]
             self._json(rows)
         else:
             self._json({"error": "not found"}, 404)
