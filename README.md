@@ -44,8 +44,25 @@ O X/Twitter, Google, YouTube e Reddit exigem sessões humanas persistentes. Um V
 | `social_sentiment` | **X/Twitter** | **Autenticado** | sentimento real de um ticker |
 | `browser_browse` | opencli web | Autenticado | conteúdo de qualquer URL (markdown) |
 | `web_search` | SearxNG | Público | pesquisa web multi-motor |
+| `site_search` | opencli (google/youtube/twitter/reddit/bbc/hn) | Auth/Public | busca num site específico (news, trending, search, bookmarks) |
 | `scrape_stealth` | CloakBrowser | **Stealth** | scraping Cloudflare/anti-bot (HTML renderizado) |
 | `health` | opencli whoami | — | estado do bridge autenticado |
+
+### Cobertura do browser-stack cheatsheet
+
+Validação (15-Ago): os use cases do `~/bin/browser-stack-cheatsheet.md` são cobertos:
+
+| Cheatsheet UC | Tool MCP |
+|---|---|
+| Notícias / google news | `site_search {site:google, command:news}` |
+| Busca num site específico | `site_search {site:youtube, command:search}` |
+| Twitter trending/timeline | `site_search {site:twitter, command:trending}` |
+| Site 403 / Cloudflare | `scrape_stealth {url}` |
+| Auth check | `health` |
+| Sessão / browser main | `browser_act {session}` |
+| Validação UI (open/click/type/eval) | `browser_act` |
+| youtube feed/history/subs | `site_search {site:youtube, command:feed}` |
+| twitter bookmarks | `site_search {site:twitter, command:bookmarks}` |
 
 ## Dashboard (webview UI)
 
@@ -65,6 +82,21 @@ http://100.74.228.17:8097/api/history  # telemetria (últimas 30 chamadas)
 - **UI** com design neutro (não corporativo), logo `assets/super-browser-logo.svg`
 
 Arranque: `python3 serve_capabilities.py` (ou launchd `com.govantis.super-browser-dashboard`).
+
+## Instalação
+
+**Recipe completa (todas as dependências de 3ª parte: opencli, CloakBrowser, searxng, Chrome bridge, Node):** ver **[INSTALL.md](INSTALL.md)** — genérico para qualquer computador, não só o Mac Mini.
+
+Resumo (6 passos):
+```bash
+git clone https://github.com/aamsilva/super-browser-mcp.git
+cd super-browser-mcp && npm install
+npm install -g @jackwener/opencli    # dependência nuclear (175 adapters)
+python3 -m venv .venv && .venv/bin/pip install cloakbrowser bs4   # scrape_stealth
+docker run -d -p 8081:8080 --name searxng searxng/searxng        # web_search
+cp config.example.json config.json   # editar paths locais
+npm test                             # verificação
+```
 
 ## Quickstart
 
@@ -166,6 +198,31 @@ Cliente MCP → tools/call {name: "finance_quote", args: {symbol: "NVDA"}}
   → Chrome bridge → barchart.com → JSON estruturado
   → {content: [{type: "text", text: JSON.stringify(data)}]}
 ```
+
+## Stateless vs Stateful (decisão de design)
+
+| Grupo | Tools | Modelo | Porquê |
+|---|---|---|---|
+| **Dados estruturados** | finance_*, web_search, social_sentiment, scrape_stealth, health | **Stateless** | Cada chamada é independente — quote/opções/defi/crypto não têm contexto entre chamadas. Escala horizontalmente, cacheable. |
+| **Navegação interativa** | browser_act | **Stateful** | A navegação é **sequencial**: `open → find → fill → click → wait → extract`. Se fosse stateless, cada ação abria um browser novo e perdia o contexto da página. |
+
+**browser_act** usa uma sessão persistente (`config.browser.defaultSession`, default `mcp-main`) que vive entre chamadas MCP — o agente pode abrir uma página, preencher um formulário, submeter, esperar o resultado e extrair, tudo na mesma sessão. Para isolamento, passar `session` diferente.
+
+**Prova verificada (15-Ago)**: `open duckduckgo → fill "super-browser-mcp" → keys Enter → extract (title "super-browser-mcp at DuckDuckGo", 2206 chars) → close` — fluxo completo de automação via MCP.
+
+**Regra**: tools de leitura = stateless (fail-safe, sem estado para limpar). Tools de escrita/interação = stateful com sessão explícita e `close` para libertar. Nunca misturar.
+
+## Auditoria de configuração (15-Ago)
+
+Sem parâmetros hardcoded de máquina. Tudo configuravel:
+
+1. **`config.json`** (ver `config.example.json`) — paths, URLs, sessão, exemplos UI
+2. **Env vars** `SUPER_BROWSER_*` — override por ambiente (portável para CI/VPS)
+3. **Fallback** — defaults sensatos se nem config nem env existirem
+4. **Wrapper** `bin/super-browser-mcp.sh` lê `server.node` do config (não hardcoded)
+5. **UI** `serve_capabilities.py` lê `ui.toolExamples` + `server.tailscaleIp` do config
+
+Verificado: `npm test` TODOS PASS (10 tools, stateless + stateful flow), load test 30/30 OK 0% erro.
 
 ## Manutenção
 

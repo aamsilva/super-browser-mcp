@@ -56,50 +56,136 @@ const CFG = loadConfig();
 
 /** Executa opencli <args...> --format json e devolve JSON parseado.
  *  --window background: só para adapters Chrome (whitelist no config).
- *  stdio ignore: o opencli não herda o stdin do MCP. */
+ *  Resiliência: se o adapter rejeitar --window (ex: google news usa API,
+ *  google search usa browser — inconsistente dentro do mesmo adapter),
+ *  faz retry sem o flag. stdio ignore: o opencli não herda o stdin do MCP. */
 function oc(args, { timeout = CFG.timeoutMs } = {}) {
-  const full = CFG.windowAdapters.has(args[0]) ? [...args, "--window", "background", "--format", "json"]
-                                               : [...args, "--format", "json"];
+  const withWindow = CFG.windowAdapters.has(args[0]);
+  const attempt = (win) => execFileSync(CFG.opencliBin, win ? [...args, "--window", "background", "--format", "json"]
+                                                           : [...args, "--format", "json"], {
+    timeout, encoding: "utf8", maxBuffer: 10 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
+  });
   try {
-    const out = execFileSync(CFG.opencliBin, full, {
-      timeout, encoding: "utf8", maxBuffer: 10 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
-    });
+    const out = attempt(withWindow);
     return JSON.parse(out);
   } catch (e) {
-    const msg = (e.stdout || e.message || "").toString().trim();
-    try { return JSON.parse(msg); } catch { return { ok: false, error: msg.slice(0, 300) }; }
+    // se falhou com --window e o adapter está na whitelist → retry sem flag
+    if (withWindow && !/unknown option '--window'/.test((e.stdout || e.message || "").toString())) {
+      try { return JSON.parse(attempt(true)); } catch { /* fallthrough */ }
+    }
+    try { return JSON.parse(attempt(false)); } catch {
+      const msg = (e.stdout || e.message || "").toString().trim();
+      try { return JSON.parse(msg); } catch { return { ok: false, error: msg.slice(0, 300) }; }
+    }
   }
 }
 
 const server = new McpServer({ name: "super-browser", version: "1.1.0" });
 
+// ---- Cache TTL simples (elimina o spawn do opencli para dados estáveis 60s).
+//      ponytail: Map + timestamp, sem lib. Cache de 60s para dados de mercado
+//      (quotes/options/crypto/defi são estáveis nessa janela). ----
+const CACHE_TTL_MS = 60 * 1000;
+const cache = new Map();
+async function cached(key, ttlMs, fn) {
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.ts < (ttlMs || CACHE_TTL_MS)) return hit.data;
+  const data = await fn();
+  cache.set(key, { ts: Date.now(), data });
+  // limpeza simples: evita crescimento infinito (ponytail: sem lib, per-entry TTL)
+  if (cache.size > 500) {
+    const now = Date.now();
+    for (const [k, v] of cache) if (now - v.ts > CACHE_TTL_MS) cache.delete(k);
+  }
+  return data;
+}
+async function cachedOc(key, args) {
+  return cached(key, null, () => oc(args));
+}
+
+// ---- Fetch direto às APIs públicas (elimina o spawn do opencli para dados
+//      PUBLIC puros). O opencli continua como fonte de verdade para auth/adapters
+//      complexos (barchart, twitter, web, browser). Fallback: se a API falhar,
+//      usa o opencli (resiliência). ----
+async function fetchJson(url) {
+  const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+function normalizeBinance(raw, pair) {
+  return [{
+    symbol: pair, price: raw.lastPrice, change: raw.priceChange,
+    changePct: raw.priceChangePercent, high: raw.highPrice, low: raw.lowPrice,
+    volume: raw.volume, quoteVolume: raw.quoteVolume,
+  }];
+}
+function normalizeDefi(raw, limit) {
+  return raw.slice(0, limit).map(p => ({
+    slug: p.slug, name: p.name, tvl: p.tvl, mcap: p.mcap, chains: (p.chains || []).slice(0, 5),
+    change_1d: p.change_1d, change_7d: p.change_7d, symbol: p.symbol,
+  }));
+}
+
+// ---- Search em sites específicos (cheatsheet UC2/UC3/UC10/UC11/UC12) ----
+// Tool única e genérica: site + comando + query. Cobre youtube search/feed,
+// twitter trending/timeline, google news/search/trends, bookmarks, etc.
+// A lista de sites vem de opencli list (adapter-first).
+server.tool("site_search", "Pesquisa num site específico via opencli (adapter). Sites: youtube (search/feed/history/subscriptions), twitter (trending/timeline/search/bookmarks), google (news/search/trends), reddit (hot/search), bbc (news), hackernews (top/best). Uso: site + comando + query (query opcional conforme o comando).",
+  { site: z.string().describe("Site (ex: youtube, twitter, google, reddit, bbc, hackernews)"), command: z.string().describe("Comando do site (ex: search, trending, timeline, news, top)"), query: z.string().optional().describe("Query (para comandos de search)"), limit: z.number().optional() },
+  async ({ site, command, query, limit = 5 }) => {
+    const args = [site, command];
+    if (query) args.push(query);
+    if (limit) args.push("--limit", String(limit));
+    const d = await cachedOc(`site:${site}:${command}:${query || ""}`, args);
+    return { content: [{ type: "text", text: JSON.stringify(d) }] };
+  });
+
 // ---- Finance / Trading (subskill trading-search) ----
 server.tool("finance_quote", "Cotações e dados de ações (barchart).",
   { symbol: z.string().describe("Ticker (ex: NVDA)") },
   async ({ symbol }) => {
-    const d = oc(["barchart", "quote", symbol]);
+    // cache TTL 60s: o barchart via opencli é lento (~2-9s); cache elimina o spawn
+    const d = await cachedOc(`quote:${symbol}`, ["barchart", "quote", symbol]);
     return { content: [{ type: "text", text: JSON.stringify(d) }] };
   });
 
 server.tool("finance_options", "Cadeia de opções + greeks + IV (barchart).",
   { symbol: z.string().describe("Ticker (ex: NVDA)") },
   async ({ symbol }) => {
-    const d = oc(["barchart", "options", symbol]);
+    const d = await cachedOc(`options:${symbol}`, ["barchart", "options", symbol]);
     return { content: [{ type: "text", text: JSON.stringify(d) }] };
   });
 
 server.tool("finance_crypto", "Preço crypto (binance).",
   { pair: z.string().describe("Par (ex: BTCUSDT)") },
   async ({ pair }) => {
-    const d = oc(["binance", "price", pair]);
-    return { content: [{ type: "text", text: JSON.stringify(d) }] };
+    try {
+      // HTTP direto à API pública da Binance (sem spawn opencli ~1.5s → ~0.2s)
+      const d = await cached(`binance:${pair}`, null, async () => {
+        const raw = await fetchJson(`https://api.binance.com/api/v3/ticker/24hr?symbol=${pair}`);
+        return normalizeBinance(raw, pair);
+      });
+      return { content: [{ type: "text", text: JSON.stringify(d) }] };
+    } catch (e) {
+      // fallback: opencli (fonte de verdade) se a API pública falhar
+      const d = await cachedOc(`binance:${pair}`, ["binance", "price", pair]);
+      return { content: [{ type: "text", text: JSON.stringify(d) }] };
+    }
   });
 
 server.tool("finance_defi", "Top DeFi por TVL (defillama).",
   { limit: z.number().optional().describe("Quantos protocolos") },
   async ({ limit = 5 }) => {
-    const d = oc(["defillama", "protocols", "--limit", String(limit)]);
-    return { content: [{ type: "text", text: JSON.stringify(d) }] };
+    try {
+      const d = await cached(`defi:${limit}`, null, async () => {
+        const raw = await fetchJson("https://api.llama.fi/protocols");
+        return normalizeDefi(raw, limit);
+      });
+      return { content: [{ type: "text", text: JSON.stringify(d) }] };
+    } catch (e) {
+      const d = await cachedOc(`defi:${limit}`, ["defillama", "protocols", "--limit", String(limit)]);
+      return { content: [{ type: "text", text: JSON.stringify(d) }] };
+    }
   });
 
 // ---- Sentimento social (autenticado via Chrome) ----

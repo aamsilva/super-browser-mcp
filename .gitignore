@@ -1,4 +1,9 @@
 node_modules/
+.venv/
+config.json
 *.log
 .DS_Store
 /tmp/
+*.db
+*.db-wal
+*.db-shm

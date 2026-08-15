@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/index.js",
     "test": "node test/run.js",
-    "dashboard": "python3 serve_capabilities.py"
+    "dashboard": "python3 serve_capabilities.py",
+    "setup": "bash scripts/setup.sh"
   },
   "keywords": [],
   "author": "Augusto Silva",
@@ -22,5 +23,8 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/aamsilva/super-browser-mcp.git"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }
