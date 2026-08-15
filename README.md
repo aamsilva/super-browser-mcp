@@ -70,6 +70,19 @@ Uso: `browser_agent {action:"open", url, session:"amazon"}` → `{action:"snapsh
 
 Regra: **um browser por tarefa**. Não usar browser_act E browser_agent na mesma tarefa (stacks de sessão diferentes).
 
+## Web search: Google (MCP) vs Searxng [VERIFICADO 15-Ago]
+
+| Métrica | Searxng | Google via MCP (`site_search`) |
+|---|---|---|
+| Results | 0 (degraded: brave rate-limit, ddg timeout) | **3** |
+| Latência | 4.2s | **2.7s** |
+| Fiabilidade | ❌ engines gratuitas com CAPTCHA/limits | ✅ **COOKIE autenticado** (Chrome bridge) |
+| Multi-query paralela | ~0 | **5/5 OK** (5 processos MCP) |
+
+**Google via MCP é alternativa real (hoje superior) ao searxng.** Usar
+`site_search {site:google, command:search, query:"..."}` como fonte primária de web search;
+searxng como fallback/agregação multi-engine. Detalhes: `LOAD_TEST.md`.
+
 ### Auth fiável (quem validar sessão)
 
 **`opencli whoami` e `auth_status` NÃO são fidedignos** (verificado 15-Ago): reddit/instagram diziam `AUTH_REQUIRED` mas estavam logados (e vice-versa). A tool **`auth_check`** usa a estratégia fiável: **navega para uma página só-autenticada** (`/settings`) e verifica se o servidor redireciona para `/login`:

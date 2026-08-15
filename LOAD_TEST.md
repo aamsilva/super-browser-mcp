@@ -102,3 +102,27 @@ Data: 15-Ago-2026 · Método: cliente MCP real por chamada, timeout 60s · Tools
 1. **Uso real** (ARES/agentes: <5 req/min) — folga enorme, irrelevante
 2. **Health/Chrome tools** em produção: NUNCA em concorrência alta; o bridge é 1 sessão
 3. **Para >15 req/s**: adicionar 2º profile Chrome (multi-context) OU cache antecipado (refresh em background)
+
+## Comparação Google (MCP) vs Searxng (15-Ago-2026, [VERIFICADO])
+
+| Métrica | Searxng | Google via MCP (site_search) |
+|---|---|---|
+| Results (query "MCP server") | **0** (degraded) | **3** |
+| Latência | 4.2s | **2.7s** |
+| Fiabilidade | ❌ brave rate-limit, duckduckgo timeout 10s, startpage CAPTCHA | ✅ COOKIE autenticado (Chrome bridge) |
+| Concorrência | 9/9 OK (quando engines OK) | **5/5 OK em paralelo** (5 processos) |
+| Multi-query paralela | ~0 (engines suspensas) | **5 queries → 5×~2 results** |
+
+**Conclusão**: o google search via MCP é **alternativa real e hoje superior** ao searxng
+(que sofre rate-limits/CAPTCHA das engines gratuitas). O google usa a sessão COOKIE
+autenticada (Chrome bridge) — fiável, sem CAPTCHA.
+
+**Uso recomendado**: `site_search {site:google, command:search, query:"..."}` como
+fonte primária de web search; searxng como fallback/agregação multi-engine quando
+as engines estiverem OK.
+
+### Limitações conhecidas do google via MCP
+- **Rate-limit por query**: queries finance (NVDA stock) podem dar menos results (1 vs 2)
+- **Latência 2.7-4.5s**: passa pelo Chrome bridge (autenticado) — mais lento que HTTP puro
+- **Depende do bridge**: se o Chrome bridge cair, google falha (mas searxng idem)
+- **Não é meta-search**: 1 engine (Google) vs searxng (N engines) — para diversidade de fontes, searxng ainda tem papel
