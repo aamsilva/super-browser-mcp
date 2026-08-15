@@ -107,7 +107,7 @@ def _summarize(tool, out):
 def log_call(tool, ok, ms, error="", caller="webui", method="mcp-stdio", params="", result="", source="api"):
     conn.execute("""INSERT INTO calls (ts, tool, ok, latency_ms, error, caller, method, params, result, source, result_type, result_summary)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                 (time.time(), tool, 1 if ok else 0, ms, (error or "")[:300], caller, method, (params or "")[:500], (result or "")[:2000],
+                 (time.time(), tool, 1 if ok else 0, ms, (error or "")[:300], caller, method, (params or "")[:1000], (result or "")[:20000],
                   source, "ok" if ok else "error", _summarize(tool, result)[:120]))
     conn.commit()
 
@@ -204,7 +204,7 @@ def call_tool(name, args, caller="webui", source="api"):
         p.kill()
         ms = (time.time() - t0) * 1000
         ok = bool(out) and '"error"' not in out[:50]
-        log_call(name, ok, ms, "" if ok else out[:200], caller=caller, method="mcp-stdio", params=json.dumps(args)[:500], result=out[:2000], source=source)
+        log_call(name, ok, ms, "" if ok else out[:200], caller=caller, method="mcp-stdio", params=json.dumps(args)[:500], result=out[:20000], source=source)
         return {"ok": ok, "latency_ms": round(ms), "result": out[:1000000], "source": source}
     except Exception as e:
         ms = (time.time() - t0) * 1000
@@ -262,7 +262,15 @@ pre{background:var(--surface);border:1px solid var(--border);border-radius:var(-
 <div id="st"></div>
 <h2>🧪 Testes manuais das tools</h2>
 <div class="tools" id="tools"></div>
-<h2>Telemetria — últimas 30 chamadas</h2>
+<h2>Telemetria</h2>
+<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+  <label style="font-size:11px;color:var(--text3)">Últimas horas:</label>
+  <select id="hoursSel" onchange="hist()" style="background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:var(--radius-sm);padding:6px 10px;font-size:12px;font-family:var(--font-mono)">
+    <option value="1">1h</option><option value="3" selected>3h</option>
+    <option value="6">6h</option><option value="12">12h</option><option value="24">24h</option><option value="0">Tudo</option>
+  </select>
+  <span id="histCount" style="font-size:11px;color:var(--text3)"></span>
+</div>
 <table class="hist" id="hist"></table>
 <div class="footer" id="footer"></div>
 <script>
@@ -296,8 +304,18 @@ fullBtn.onclick=()=>{document.getElementById('modal').style.display='flex';
 document.getElementById('modal-title').textContent=t.name+' — markup completo ('+lastRaw.length+' chars)';
 document.getElementById('modal-body').textContent=lastRaw;};
 d.appendChild(b);d.appendChild(fullBtn);d.appendChild(pre);toolsEl.appendChild(d);});
-async function hist(){try{const r=await fetch('/api/history');const rows=await r.json();
-document.getElementById('hist').innerHTML='<tr><th>Hora</th><th>Source</th><th>Caller</th><th>Tool</th><th>Resultado</th><th>Latência</th><th>Resumo</th></tr>'+rows.map(x=>`<tr><td>${x.ts}</td><td>${x.source||'?'}</td><td>${x.caller||'?'}</td><td>${x.tool}</td><td class="${x.ok?'ok-tag':'fail-tag'}">${x.ok?'OK':'FAIL'}</td><td>${Math.round(x.latency_ms)}ms</td><td title="${(x.summary||'').replace(/"/g,'&quot;')}">${(x.summary||'').slice(0,40)}</td></tr>`).join('');}catch(e){}}
+async function hist(){try{
+const hours=document.getElementById('hoursSel').value;
+const r=await fetch('/api/history?hours='+hours+'&limit=500');const rows=await r.json();
+document.getElementById('histCount').textContent=rows.length+' chamadas';
+document.getElementById('hist').innerHTML='<tr><th>Hora</th><th>Source</th><th>Caller</th><th>Tool</th><th>Resultado</th><th>Latência</th><th>Resumo</th><th></th></tr>'+rows.map(x=>`<tr style="cursor:pointer" onclick="detail(${x.id})"><td>${x.ts}</td><td>${x.source||'?'}</td><td>${x.caller||'?'}</td><td>${x.tool}</td><td class="${x.ok?'ok-tag':'fail-tag'}">${x.ok?'OK':'FAIL'}</td><td>${Math.round(x.latency_ms)}ms</td><td title="${(x.summary||'').replace(/"/g,'&quot;')}">${(x.summary||'').slice(0,50)}</td><td>🔎</td></tr>`).join('');}catch(e){}}
+async function detail(id){try{
+const r=await fetch('/api/trace?hours=0');const rows=await r.json();const x=rows.find(y=>y.id===id);if(!x)return;
+document.getElementById('modal').style.display='flex';
+document.getElementById('modal-title').textContent=x.tool+' · '+x.ts+' · '+x.caller+' · '+x.latency_ms+'ms · '+((x.ok)?'OK':'FAIL');
+document.getElementById('modal-body').textContent=
+ 'PARAMS:\n'+(x.params||'(vazio)')+'\n\nRESULT:\n'+(x.result||'(vazio)')+'\n\nSUMMARY:\n'+(x.summary||'(vazio)')+'\n\nERROR:\n'+(x.error||'(sem erro)');
+}catch(e){}}
 document.getElementById('footer').textContent='super-browser-mcp v1.0 · serve_capabilities.py · ' + new Date().toISOString().slice(0,10);
 snap();hist();setInterval(()=>{snap();hist();},15000);
 </script>
@@ -354,11 +372,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif u.path == "/api/state":
             self._json(state_snapshot())
         elif u.path == "/api/history":
-            rows = [{"ts": time.strftime("%H:%M:%S", time.localtime(r[0])), "tool": r[1], "ok": bool(r[2]), "latency_ms": r[3], "caller": r[4] or "?", "method": r[5] or "?", "params": (r[6] or "")[:80], "summary": r[7] or "", "source": r[8] or "?"} for r in conn.execute("SELECT ts, tool, ok, latency_ms, caller, method, params, result_summary, source FROM calls ORDER BY id DESC LIMIT 30")]
+            # consulta últimas N horas (param hours, default 3) + limite configurável
+            q = urlparse(self.path).query
+            hours = 3
+            limit = 30
+            if q:
+                p = dict(x.split("=") for x in q.split("&") if "=" in x)
+                hours = max(0, int(p.get("hours", hours)))
+                limit = min(2000, int(p.get("limit", limit)))
+            sql = "SELECT id, ts, tool, ok, latency_ms, caller, method, params, result_summary, source, error FROM calls"
+            if hours:
+                sql += f" WHERE ts > {time.time() - hours * 3600}"
+            sql += " ORDER BY id DESC LIMIT " + str(limit)
+            rows = [{"id": r[0], "ts": time.strftime("%H:%M:%S", time.localtime(r[1])), "tool": r[2], "ok": bool(r[3]), "latency_ms": r[4], "caller": r[5] or "?", "method": r[6] or "?", "params": (r[7] or "")[:500], "summary": r[8] or "", "source": r[9] or "?", "error": r[10] or ""} for r in conn.execute(sql)]
             self._json(rows)
         elif u.path == "/api/trace":
             # traceability completa: quem, como, params, tempo, resultado, resumo
-            rows = [{"id": r[0], "ts": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r[1])), "tool": r[2], "ok": bool(r[3]), "latency_ms": round(r[4], 1), "error": r[5] or "", "caller": r[6] or "?", "method": r[7] or "?", "params": r[8] or "", "result": (r[9] or "")[:300], "source": r[10] or "?", "result_type": r[11] or "?", "summary": r[12] or ""} for r in conn.execute("SELECT id, ts, tool, ok, latency_ms, error, caller, method, params, result, source, result_type, result_summary FROM calls ORDER BY id DESC LIMIT 100")]
+            q = urlparse(self.path).query
+            hours = 0
+            if q:
+                p = dict(x.split("=") for x in q.split("&") if "=" in x)
+                hours = max(0, int(p.get("hours", 0)))
+            sql = "SELECT id, ts, tool, ok, latency_ms, error, caller, method, params, result, source, result_type, result_summary FROM calls"
+            if hours:
+                sql += f" WHERE ts > {time.time() - hours * 3600}"
+            sql += " ORDER BY id DESC LIMIT 2000"
+            rows = [{"id": r[0], "ts": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r[1])), "tool": r[2], "ok": bool(r[3]), "latency_ms": round(r[4], 1), "error": r[5] or "", "caller": r[6] or "?", "method": r[7] or "?", "params": r[8] or "", "result": (r[9] or "")[:20000], "source": r[10] or "?", "result_type": r[11] or "?", "summary": r[12] or ""} for r in conn.execute(sql)]
             self._json(rows)
         else:
             self._json({"error": "not found"}, 404)

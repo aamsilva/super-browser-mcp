@@ -591,7 +591,7 @@ function mcpLogCall(tool, ok, ms, error, params, result) {
   try {
     const summary = (() => { try { const j = JSON.parse(result || "{}"); if (Array.isArray(j)) return j.length + " itens"; if (j.error) return "erro: " + String(j.error).slice(0, 60); if (j.authenticated !== undefined) return "authenticated=" + j.authenticated; if (j.title && j.len) return j.title.slice(0, 30) + " (" + j.len + "B)"; if (j.price) return "price=" + j.price; if (j.ok !== undefined) return "ok=" + j.ok; return Object.keys(j).slice(0, 3).map(k => k + "=" + String(j[k]).slice(0, 15)).join(", "); } catch { return (result || "").slice(0, 80); } })();
     db.prepare("INSERT INTO calls (ts, tool, ok, latency_ms, error, caller, method, params, result, source, result_type, result_summary) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").run(
-      Date.now() / 1000, tool, ok ? 1 : 0, ms, (error || "").slice(0, 300), "mcp-stdio", "mcp-direct", (params || "").slice(0, 300), (result || "").slice(0, 2000), "opencode", ok ? "ok" : "error", String(summary).slice(0, 120));
+      Date.now() / 1000, tool, ok ? 1 : 0, ms, (error || "").slice(0, 300), "mcp-stdio", "mcp-direct", (params || "").slice(0, 300), (result || "").slice(0, 20000), "opencode", ok ? "ok" : "error", String(summary).slice(0, 120));
   } catch { /* logging nunca deve partir o MCP */ }
 }
 // Interceptar tools/call — registar TODAS as chamadas independentemente da fonte.
