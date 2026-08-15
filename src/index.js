@@ -35,6 +35,7 @@ const { z } = require("zod");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
 
 // ---- Config (genérico: env > config.json > default) ----
 function loadConfig() {
@@ -83,7 +84,7 @@ function oc(args, { timeout = CFG.timeoutMs } = {}) {
   }
 }
 
-const server = new McpServer({ name: "super-browser", version: "1.1.0" });
+const server = new McpServer({ name: "super-browser", version: pkg.version });
 
 // ---- Cache TTL simples (elimina o spawn do opencli para dados estáveis 60s).
 //      ponytail: Map + timestamp, sem lib. Cache de 60s para dados de mercado
@@ -432,7 +433,6 @@ server.tool("web_search", "Pesquisa web: Google (opencli, autenticado) PRIMÁRIO
   });
 
 // ---- Health ----
-const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
 server.tool("health", "Estado do super-browser-mcp + conectividade.",
   {},
   async () => {
