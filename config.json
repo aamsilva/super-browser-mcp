@@ -21,7 +21,9 @@
     "url": "http://localhost:8081"
   },
   "browser": {
-    "defaultSession": "mcp-main"
+    "defaultSession": "mcp-main",
+    "maxTabs": 30,
+    "autoCloseRead": true
   },
   "server": {
     "root": "/Volumes/disco1tb/tools/super-browser-mcp",

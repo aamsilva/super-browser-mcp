@@ -50,6 +50,8 @@ function loadConfig() {
     cloakMaxBytes: Number(e("SUPER_BROWSER_MAX_HTML", file.cloak?.maxHtmlBytes || 2000000)),
     searxngUrl: e("SUPER_BROWSER_SEARXNG_URL", file.searxng?.url || "http://localhost:8081"),
     defaultSession: e("SUPER_BROWSER_SESSION", file.browser?.defaultSession || "mcp-main"),
+    maxTabs: Number(e("SUPER_BROWSER_MAX_TABS", file.browser?.maxTabs || 10)),
+    autoCloseRead: e("SUPER_BROWSER_AUTOCLOSE", String(file.browser?.autoCloseRead ?? true)) !== "false",
     timeoutMs: Number(e("SUPER_BROWSER_TIMEOUT_MS", file.cloak?.timeoutMs || 45000)),
   };
 }
@@ -284,14 +286,33 @@ server.tool("browser_act", `Executa uma ação de automação browser no Chrome 
   async ({ action, args = {}, session = DEFAULT_SESSION, window: windowMode }) => {
     if (!BROWSER_ACTIONS[action]) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: `Ação inválida: ${action}. Disponíveis: ${ACTIONS_LIST.join(", ")}` }) }] };
     try {
+      // GESTÃO DE RECURSOS NATIVA (regra user 15-Ago): limite de tabs por sessão (LRU).
+      // Ao abrir tab, se exceder maxTabs, fechar a mais antiga — nunca acumular.
+      if (action === "tab" && args.action === "new") {
+        try {
+          const list = browserExec("tab", { action: "list" }, session);
+          const count = (String(list).match(/"index"/g) || []).length;
+          if (count >= CFG.maxTabs) {
+            // fechar a tab mais antiga (primeira da lista) antes de abrir a nova
+            try { browserExec("tab", { action: "close", index: "0" }, session); } catch { /* LRU best-effort */ }
+          }
+        } catch { /* se não conseguir listar, abrir mesmo assim */ }
+      }
       const d = browserExec(action, args, session, windowMode);
       // AUTO-CLOSE (regra user 15-Ago): ações de LEITURA consomem a info e fecham
       // a tab IMEDIATAMENTE (minimizar tempo aberto = memória). Ações interativas
       // (open/fill/click/type/wait) NÃO fecham — o agente precisa da sessão ativa.
       const READ_ACTIONS = new Set(["extract", "state", "eval", "screenshot", "get", "tab"]);
-      if (READ_ACTIONS.has(action)) {
+      if (READ_ACTIONS.has(action) && CFG.autoCloseRead) {
         try { browserExec("close", {}, session); } catch { /* fechar best-effort */ }
-        return { content: [{ type: "text", text: JSON.stringify({ ...d, auto_closed: true }) }] };
+        // VERIFICAÇÃO END-TO-END (lição user 15-Ago): após fechar, confirmar 0 tabs
+        // reais (não só fechar a sessão — garantir que o Chrome físico ficou limpo).
+        let remaining = "?";
+        try {
+          const check = browserExec("tab", { action: "list" }, session);
+          remaining = String(check).match(/"index"/g) ? String(check).match(/"index"/g).length : 0;
+        } catch { remaining = 0; }
+        return { content: [{ type: "text", text: JSON.stringify({ ...d, auto_closed: true, tabs_remaining: remaining }) }] };
       }
       return { content: [{ type: "text", text: JSON.stringify(d) }] };
     } catch (e) {
