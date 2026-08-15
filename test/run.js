@@ -36,6 +36,7 @@ async function main(){
     ['finance_defi', {limit:3}],
     ['web_search', {query:'MCP server', limit:2}],
     ['site_search', {site:'google', command:'news', query:'AI', limit:2}],
+    ['auth_status', {}],
     ['health', {}],
   ];
   for (const [name, args] of tests) {

@@ -226,24 +226,26 @@ const POS_ARGS = new Set(["target", "text", "option", "direction", "key", "js", 
 // abria um browser novo e perdia o contexto da página. O opencli browser exige
 // <session> — usamos uma fixa (config browser.defaultSession) para a UI/agente.
 const DEFAULT_SESSION = CFG.defaultSession;
-function browserExec(action, args, session) {
+function browserExec(action, args, session, windowMode) {
   const cmd = [action];
   for (const [k, v] of Object.entries(args || {})) {
     if (v === undefined || v === null || v === "") continue;
     if (POS_ARGS.has(k)) cmd.push(String(v));
     else cmd.push("--" + k, String(v));
   }
-  const out = execFileSync(CFG.opencliBin, ["browser", session, ...cmd], {
+  const flags = ["browser", session, ...cmd];
+  if (windowMode) flags.push("--window", windowMode);
+  const out = execFileSync(CFG.opencliBin, flags, {
     timeout: CFG.timeoutMs, encoding: "utf8", maxBuffer: 10 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
   });
   try { return JSON.parse(out); } catch { return { raw: out.slice(0, 2000) }; }
 }
-server.tool("browser_act", `Executa uma ação de automação browser no Chrome bridge autenticado. Ações: ${ACTIONS_LIST.join(", ")}. Exemplos: fill (preencher formulário), click, type, select (dropdown), upload, keys, wait, eval, screenshot. STATE-FUL por defeito (sessão persistente "mcp-main"): open → fill → click funcionam em sequência na MESMA página. Para uma sessão isolada, passar session diferente.`,
-  { action: z.string().describe(`Ação: ${ACTIONS_LIST.join(" | ")}`), args: z.record(z.any()).optional().describe("Argumentos da ação (ver schema de cada ação)"), session: z.string().optional().describe("Nome da sessão browser (default mcp-main; usar diferente para isolamento)") },
-  async ({ action, args = {}, session = DEFAULT_SESSION }) => {
+server.tool("browser_act", `Executa uma ação de automação browser no Chrome bridge autenticado. Ações: ${ACTIONS_LIST.join(", ")}. Exemplos: fill (preencher formulário), click, type, select (dropdown), upload, keys, wait, eval, screenshot. STATE-FUL por defeito (sessão persistente "mcp-main"): open → fill → click funcionam em sequência na MESMA página. Para uma sessão isolada, passar session diferente. AUTH ASSISTIDA: passar window:"foreground" abre a página VISÍVEL no Chrome real do utilizador — para login manual (o utilizador preenche, o agente espera com action:"wait" e depois valida com health/whoami). window:"background" (default) é invisível.`,
+  { action: z.string().describe(`Ação: ${ACTIONS_LIST.join(" | ")}`), args: z.record(z.any()).optional().describe("Argumentos da ação (ver schema de cada ação)"), session: z.string().optional().describe("Nome da sessão browser (default mcp-main; usar diferente para isolamento)"), window: z.string().optional().describe("Modo da janela: background (default, invisível) ou foreground (VISÍVEL — para auth manual pelo utilizador)") },
+  async ({ action, args = {}, session = DEFAULT_SESSION, window: windowMode }) => {
     if (!BROWSER_ACTIONS[action]) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: `Ação inválida: ${action}. Disponíveis: ${ACTIONS_LIST.join(", ")}` }) }] };
     try {
-      const d = browserExec(action, args, session);
+      const d = browserExec(action, args, session, windowMode);
       return { content: [{ type: "text", text: JSON.stringify(d) }] };
     } catch (e) {
       return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: e.message }) }] };
@@ -297,8 +299,19 @@ server.tool("health", "Estado do super-browser-mcp + conectividade.",
     const bridge = oc(["youtube", "whoami"]);
     return { content: [{ type: "text", text: JSON.stringify({
       ok: true, bridge_auth: bridge && bridge.logged_in ? "logged_in" : "unknown",
-      version: "1.1.0", time: new Date().toISOString(),
+      version: "1.2.0", time: new Date().toISOString(),
     }) }] };
+  });
+
+// ---- Auth status (replica opencli auth status — sessões autenticadas por site) ----
+server.tool("auth_status", "Estado de autenticação por site (opencli auth status). Lista quais sites têm sessão ativa no Chrome bridge (logged_in/not_logged_in).",
+  {},
+  async () => {
+    const out = execFileSync(CFG.opencliBin, ["auth", "status", "--format", "json"], {
+      timeout: CFG.timeoutMs, encoding: "utf8", maxBuffer: 10 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
+    });
+    const d = JSON.parse(out);
+    return { content: [{ type: "text", text: JSON.stringify(d) }] };
   });
 
 async function main() {

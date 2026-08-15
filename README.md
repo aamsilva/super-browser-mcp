@@ -210,6 +210,27 @@ Cliente MCP → tools/call {name: "finance_quote", args: {symbol: "NVDA"}}
 
 **Prova verificada (15-Ago)**: `open duckduckgo → fill "super-browser-mcp" → keys Enter → extract (title "super-browser-mcp at DuckDuckGo", 2206 chars) → close` — fluxo completo de automação via MCP.
 
+## Autenticação assistida pelo utilizador (auth manual)
+
+**Crítico suportado** — para sites onde o agente não deve inserir credenciais (bancos, email, ou quando a auth é sensível), o MCP expõe o browser **visível no ecrã** e espera:
+
+```
+1. browser_act {action:"open", args:{url:"https://site/login"}, session:"auth-x", window:"foreground"}
+   → a página abre NO CHROME REAL (visível) — o utilizador preenche manualmente
+2. browser_act {action:"wait", args:{type:"time", value:"30"}, session:"auth-x"}
+   → o agente espera o utilizador terminar
+3. browser_act {action:"state", session:"auth-x"}
+   → o agente valida (URL mudou de /login para /home = autenticado)
+4. browser_act {action:"close", session:"auth-x"}
+   → fecha (a sessão/token PERSISTE no Chrome bridge)
+```
+
+- **window:"foreground"** = visível (auth manual); **window:"background"** (default) = invisível (automação)
+- **Persistência**: o token/cookies ficam no Chrome bridge (profile persistente) — sessões futuras não re-autenticam
+- **Verificado (15-Ago)**: open github/login foreground → wait 5s → state mostrou URL `/login`→`/` (utilizador autenticou) → github/twitter/youtube `logged_in:true` após close
+- **Alternativa (agente insere)**: usar fill+click (ver acima) com credenciais do config.json — mas para dados sensíveis, o modo foreground é o recomendado
+- **opencli equivalente**: o opencli faz o mesmo via `opencli auth status` (login por site) + `auth refresh` (mantém sessões frescas) — o MCP replica esse mecanismo via `browser_act` + `health`
+
 **Regra**: tools de leitura = stateless (fail-safe, sem estado para limpar). Tools de escrita/interação = stateful com sessão explícita e `close` para libertar. Nunca misturar.
 
 ## Auditoria de configuração (15-Ago)
