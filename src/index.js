@@ -285,8 +285,18 @@ server.tool("browser_act", `Executa uma ação de automação browser no Chrome 
     if (!BROWSER_ACTIONS[action]) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: `Ação inválida: ${action}. Disponíveis: ${ACTIONS_LIST.join(", ")}` }) }] };
     try {
       const d = browserExec(action, args, session, windowMode);
+      // AUTO-CLOSE (regra user 15-Ago): ações de LEITURA consomem a info e fecham
+      // a tab IMEDIATAMENTE (minimizar tempo aberto = memória). Ações interativas
+      // (open/fill/click/type/wait) NÃO fecham — o agente precisa da sessão ativa.
+      const READ_ACTIONS = new Set(["extract", "state", "eval", "screenshot", "get", "tab"]);
+      if (READ_ACTIONS.has(action)) {
+        try { browserExec("close", {}, session); } catch { /* fechar best-effort */ }
+        return { content: [{ type: "text", text: JSON.stringify({ ...d, auto_closed: true }) }] };
+      }
       return { content: [{ type: "text", text: JSON.stringify(d) }] };
     } catch (e) {
+      // mesmo em erro, fechar a tab (não deixar órfãos)
+      try { browserExec("close", {}, session); } catch {}
       return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: e.message }) }] };
     }
   });
@@ -363,24 +373,34 @@ server.tool("scrape_stealth", "Scraping stealth via CloakBrowser — passa Cloud
     return { content: [{ type: "text", text: JSON.stringify(d) }] };
   });
 
-// ---- Web search multi-motor (searxng) ----
-server.tool("web_search", "Pesquisa web multi-motor (searxng). Devolve resultados; se o backend estiver degradado (rate-limit/engines suspensas), sinaliza degraded em vez de [] silencioso.",
+// ---- Web search: Google (opencli) PRIMÁRIO + searxng fallback ----
+// Decisão 15-Ago [VERIFICADO]: google via opencli (COOKIE autenticado) dá 3 results
+// em 2.7s sem CAPTCHA; searxng degradou (brave rate-limit, ddg timeout, startpage
+// CAPTCHA) -> 0 results. Google primeiro, searxng fallback. Cada query google abre
+// tab no Chrome bridge — fechar após a operação para reclamar memória (regra user).
+server.tool("web_search", "Pesquisa web: Google (opencli, autenticado) PRIMÁRIO + searxng fallback multi-engine. Devolve resultados normalizados; sinaliza degraded se ambas falharem.",
   { query: z.string().describe("Query"), limit: z.number().optional() },
   async ({ query, limit = 5 }) => {
-    const res = await fetch(`${CFG.searxngUrl}/search?q=${encodeURIComponent(query)}&format=json`);
-    const d = await res.json();
-    const raw = d.results || [];
-    const items = raw.slice(0, limit).map((r) => ({
-      title: r.title, url: r.url, snippet: (r.content || "").slice(0, 200),
-    }));
-    // sinalizar degradação: se searxng devolve 0 mas tem unresponsive_engines /
-    // rate-limit, não devolver [] silencioso (lição T2: devia sinalizar ou fallback)
-    const degraded = items.length === 0 && (
-      Array.isArray(d.unresponsive_engines) && d.unresponsive_engines.length > 0
-      || !d.results
-    );
-    const out = degraded ? { ok: false, degraded: true, error: "searxng sem resultados (engines suspensas/rate-limit)", results: [] } : items;
-    return { content: [{ type: "text", text: JSON.stringify(out) }] };
+    // 1. Google via opencli (sessão COOKIE autenticada) — fiable, sem CAPTCHA
+    try {
+      const g = oc(["google", "search", query, "--limit", String(limit)]);
+      const items = (Array.isArray(g) ? g : []).map(r => ({
+        title: r.title || "", url: r.url || "", snippet: (r.snippet || r.content || "").slice(0, 200),
+      }));
+      if (items.length > 0) return { content: [{ type: "text", text: JSON.stringify({ engine: "google", results: items }) }] };
+    } catch { /* google falhou -> searxng fallback */ }
+    // 2. Searxng fallback (multi-engine)
+    try {
+      const res = await fetch(`${CFG.searxngUrl}/search?q=${encodeURIComponent(query)}&format=json`);
+      const d = await res.json();
+      const items = (d.results || []).slice(0, limit).map(r => ({
+        title: r.title, url: r.url, snippet: (r.content || "").slice(0, 200),
+      }));
+      if (items.length > 0) return { content: [{ type: "text", text: JSON.stringify({ engine: "searxng", results: items }) }] };
+      const degraded = Array.isArray(d.unresponsive_engines) && d.unresponsive_engines.length > 0 || !d.results;
+      if (degraded) return { content: [{ type: "text", text: JSON.stringify({ ok: false, degraded: true, error: "google+searxng sem resultados", engine: "searxng" }) }] };
+    } catch {}
+    return { content: [{ type: "text", text: JSON.stringify({ ok: false, degraded: true, error: "google+searxng ambos falharam" }) }] };
   });
 
 // ---- Health ----
