@@ -297,7 +297,7 @@ d.appendChild(b);d.appendChild(fullBtn);d.appendChild(pre);toolsEl.appendChild(d
 async function hist(){try{const r=await fetch('/api/history');const rows=await r.json();
 document.getElementById('hist').innerHTML='<tr><th>Hora</th><th>Source</th><th>Caller</th><th>Tool</th><th>Resultado</th><th>Latência</th><th>Resumo</th></tr>'+rows.map(x=>`<tr><td>${x.ts}</td><td>${x.source||'?'}</td><td>${x.caller||'?'}</td><td>${x.tool}</td><td class="${x.ok?'ok-tag':'fail-tag'}">${x.ok?'OK':'FAIL'}</td><td>${Math.round(x.latency_ms)}ms</td><td title="${(x.summary||'').replace(/"/g,'&quot;')}">${(x.summary||'').slice(0,40)}</td></tr>`).join('');}catch(e){}}
 document.getElementById('footer').textContent='super-browser-mcp v1.0 · serve_capabilities.py · ' + new Date().toISOString().slice(0,10);
-snap();hist();setInterval(snap,15000);
+snap();hist();setInterval(()=>{snap();hist();},15000);
 </script>
 <div id="modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:999;align-items:center;justify-content:center">
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;width:90%;max-width:1000px;max-height:90vh;display:flex;flex-direction:column;overflow:hidden">
