@@ -14,7 +14,7 @@
   },
   "cloak": {
     "python": "/Volumes/disco1tb/tools/super-browser-mcp/.venv/bin/python3",
-    "maxHtmlBytes": 500000,
+    "maxHtmlBytes": 2000000,
     "timeoutMs": 45000
   },
   "searxng": {

@@ -47,7 +47,7 @@ function loadConfig() {
     windowAdapters: new Set(file.opencli?.windowAdapters || [
       "barchart", "twitter", "youtube", "bloomberg", "web", "google", "reddit", "instagram", "facebook"]),
     cloakPython: e("SUPER_BROWSER_CLOAK_PY", file.cloak?.python || "/Volumes/disco1tb/tools/scraping/.venv/bin/python3"),
-    cloakMaxBytes: Number(e("SUPER_BROWSER_MAX_HTML", file.cloak?.maxHtmlBytes || 500000)),
+    cloakMaxBytes: Number(e("SUPER_BROWSER_MAX_HTML", file.cloak?.maxHtmlBytes || 2000000)),
     searxngUrl: e("SUPER_BROWSER_SEARXNG_URL", file.searxng?.url || "http://localhost:8081"),
     defaultSession: e("SUPER_BROWSER_SESSION", file.browser?.defaultSession || "mcp-main"),
     timeoutMs: Number(e("SUPER_BROWSER_TIMEOUT_MS", file.cloak?.timeoutMs || 45000)),
@@ -64,7 +64,7 @@ function oc(args, { timeout = CFG.timeoutMs } = {}) {
   const withWindow = CFG.windowAdapters.has(args[0]);
   const attempt = (win) => execFileSync(CFG.opencliBin, win ? [...args, "--window", "background", "--format", "json"]
                                                            : [...args, "--format", "json"], {
-    timeout, encoding: "utf8", maxBuffer: 10 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
+    timeout, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
   });
   try {
     const out = attempt(withWindow);
@@ -256,7 +256,7 @@ function browserExec(action, args, session, windowMode) {
   const flags = ["browser", session, ...cmd];
   if (windowMode) flags.push("--window", windowMode);
   const out = execFileSync(CFG.opencliBin, flags, {
-    timeout: CFG.timeoutMs, encoding: "utf8", maxBuffer: 10 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
+    timeout: CFG.timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
   });
   try { return JSON.parse(out); } catch { return { raw: out.slice(0, 2000) }; }
 }
@@ -290,13 +290,14 @@ server.tool("scrape_stealth", "Scraping stealth via CloakBrowser — passa Cloud
   async ({ url }) => {
     try {
       const out = execFileSync(CFG.cloakPython, ["-c", CLOAK_SCRIPT(url, CFG.cloakMaxBytes)], {
-        timeout: CFG.timeoutMs, encoding: "utf8", maxBuffer: 10 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
+        timeout: CFG.timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
       });
       const d = JSON.parse(out.trim());
-      // devolver o HTML renderizado (o markup), não só metadata — para inspeção.
-      // cap a 100KB no output (o len total fica em len).
-      const htmlCap = (d.html || "").slice(0, 100000);
-      return { content: [{ type: "text", text: JSON.stringify({ ok: true, title: d.title, len: d.len, url: d.url, html: htmlCap, html_inspecionavel: htmlCap.length > 0 }) }] };
+      // devolver o HTML renderizado COMPLETO (o markup) — o MCP NÃO trunca.
+      // O cap de recolha (cloakMaxBytes) é configurável no config; a webui é
+      // que trunca na visualização (pre 2500 + modal "Ver markup completo").
+      const html = d.html || "";
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, title: d.title, len: d.len, url: d.url, html, html_len: html.length }) }] };
     } catch (e) {
       const msg = (e.stdout || e.message || "").toString().trim();
       return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: msg.slice(0, 200) }) }] };
@@ -331,7 +332,7 @@ server.tool("auth_status", "Estado de autenticação por site (opencli auth stat
   {},
   async () => {
     const out = execFileSync(CFG.opencliBin, ["auth", "status", "--format", "json"], {
-      timeout: CFG.timeoutMs, encoding: "utf8", maxBuffer: 10 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
+      timeout: CFG.timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
     });
     const d = JSON.parse(out);
     return { content: [{ type: "text", text: JSON.stringify(d) }] };

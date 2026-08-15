@@ -105,7 +105,7 @@ def _summarize(tool, out):
 def log_call(tool, ok, ms, error="", caller="webui", method="mcp-stdio", params="", result="", source="api"):
     conn.execute("""INSERT INTO calls (ts, tool, ok, latency_ms, error, caller, method, params, result, source, result_type, result_summary)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                 (time.time(), tool, 1 if ok else 0, ms, (error or "")[:300], caller, method, (params or "")[:300], (result or "")[:500],
+                 (time.time(), tool, 1 if ok else 0, ms, (error or "")[:300], caller, method, (params or "")[:500], (result or "")[:2000],
                   source, "ok" if ok else "error", _summarize(tool, result)[:120]))
     conn.commit()
 
@@ -202,8 +202,8 @@ def call_tool(name, args, caller="webui", source="api"):
         p.kill()
         ms = (time.time() - t0) * 1000
         ok = bool(out) and '"error"' not in out[:50]
-        log_call(name, ok, ms, "" if ok else out[:200], caller=caller, method="mcp-stdio", params=json.dumps(args)[:300], result=out[:500], source=source)
-        return {"ok": ok, "latency_ms": round(ms), "result": out[:8000], "source": source}
+        log_call(name, ok, ms, "" if ok else out[:200], caller=caller, method="mcp-stdio", params=json.dumps(args)[:500], result=out[:2000], source=source)
+        return {"ok": ok, "latency_ms": round(ms), "result": out[:1000000], "source": source}
     except Exception as e:
         ms = (time.time() - t0) * 1000
         log_call(name, False, ms, str(e), source=source)
