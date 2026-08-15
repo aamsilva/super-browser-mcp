@@ -314,6 +314,43 @@ server.tool("auth_status", "Estado de autenticação por site (opencli auth stat
     return { content: [{ type: "text", text: JSON.stringify(d) }] };
   });
 
+// ---- Auth check FIÁVEL (navega + verifica sinais DOM/redirect).
+//      O whoami do opencli NÃO é fidedigno (§OpencliAuthParser): reddit/instagram
+//      diziam AUTH_REQUIRED mas estavam logados, e vice-versa. Estratégia:
+//      navegar para uma página SÓ-autenticada e verificar se redireciona para
+//      /login. Se carrega → autenticado. Fiável porque o servidor decide.
+const AUTH_PROBES = {
+  reddit: "https://www.reddit.com/settings/",
+  instagram: "https://www.instagram.com/accounts/edit/",
+  github: "https://github.com/settings/profile",
+  twitter: "https://x.com/settings/account",
+  youtube: "https://www.youtube.com/account",
+  amazon: "https://www.amazon.com/gp/css/homepage.html",
+  generic: "",
+};
+server.tool("auth_check", "Valida autenticação por NAVEGAÇÃO (fiável, não usa whoami): abre uma página só-autenticada do site e verifica se redireciona para login. Sites: reddit, instagram, github, twitter, youtube, amazon. Devolve {authenticated, url, redirected}. Isto substitui o whoami do opencli (não fidedigno).",
+  { site: z.string().describe("Site: reddit | instagram | github | twitter | youtube | amazon") },
+  async ({ site }) => {
+    const url = AUTH_PROBES[site];
+    if (!url) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: `Site desconhecido: ${site}. Disponíveis: ${Object.keys(AUTH_PROBES).join(", ")}` }) }] };
+    const session = `authcheck-${site}-${Date.now()}`;
+    try {
+      browserExec("open", { url }, session, "background");
+      await new Promise(r => setTimeout(r, 4000));
+      const st = browserExec("eval", { js: `(() => { const u = location.href; return { url: u, redirected: /\\/(login|accounts\\/login|signin)(\\?|\\/|$)/.test(u) }; })()` }, session);
+      // browserExec devolve JSON parseado (eval devolve objeto) ou {raw: texto}
+      const d = st.raw ? JSON.parse(st.raw) : st;
+      const urlFinal = d.url || "";
+      const redirected = d.redirected === true || /\/login/.test(urlFinal);
+      const authenticated = !redirected && urlFinal.length > 0;
+      try { browserExec("close", {}, session); } catch {}
+      return { content: [{ type: "text", text: JSON.stringify({ site, authenticated, url: urlFinal, redirected }) }] };
+    } catch (e) {
+      try { browserExec("close", {}, session); } catch {}
+      return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: e.message }) }] };
+    }
+  });
+
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);

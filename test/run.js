@@ -37,6 +37,7 @@ async function main(){
     ['web_search', {query:'MCP server', limit:2}],
     ['site_search', {site:'google', command:'news', query:'AI', limit:2}],
     ['auth_status', {}],
+    ['auth_check', {site:'github'}],
     ['health', {}],
   ];
   for (const [name, args] of tests) {

@@ -45,8 +45,22 @@ O X/Twitter, Google, YouTube e Reddit exigem sessões humanas persistentes. Um V
 | `browser_browse` | opencli web | Autenticado | conteúdo de qualquer URL (markdown) |
 | `web_search` | SearxNG | Público | pesquisa web multi-motor |
 | `site_search` | opencli (google/youtube/twitter/reddit/bbc/hn) | Auth/Public | busca num site específico (news, trending, search, bookmarks) |
+| `auth_status` | opencli auth status | — | estado de sessão por site (parser, pode estar desatualizado) |
+| `auth_check` | navegação (página só-autenticada) | — | **auth fiável**: abre /settings e verifica se redireciona para login |
 | `scrape_stealth` | CloakBrowser | **Stealth** | scraping Cloudflare/anti-bot (HTML renderizado) |
 | `health` | opencli whoami | — | estado do bridge autenticado |
+
+### Auth fiável (quem validar sessão)
+
+**`opencli whoami` e `auth_status` NÃO são fidedignos** (verificado 15-Ago): reddit/instagram diziam `AUTH_REQUIRED` mas estavam logados (e vice-versa). A tool **`auth_check`** usa a estratégia fiável: **navega para uma página só-autenticada** (`/settings`) e verifica se o servidor redireciona para `/login`:
+
+| Site | Página só-autenticada | Resultado verificado |
+|---|---|---|
+| github | `/settings/profile` | `authenticated:true` (carregou) |
+| reddit | `/settings/` | `authenticated:false` (redirect `/login`) |
+| instagram | `/accounts/edit/` | `authenticated:false` (redirect `/login`) |
+
+Fiável porque é o **servidor** que decide (redirect), não o parser local.
 
 ### Cobertura do browser-stack cheatsheet
 
