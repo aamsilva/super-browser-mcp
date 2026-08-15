@@ -1,0 +1,25 @@
+{
+  "name": "super-browser-mcp",
+  "version": "1.0.0",
+  "description": "MCP server que exp\u00f5e as capacidades de browsing/finance do Mac Mini (opencli + Chrome bridge autenticado + searxng) como tools MCP. Consum\u00edvel por opencode, VS Code, Antigravity, Claude Code, Cursor e remotamente pela VPS.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node test/run.js"
+  },
+  "keywords": [],
+  "author": "Augusto Silva",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.4.3"
+  },
+  "bin": {
+    "super-browser-mcp": "src/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aamsilva/super-browser-mcp.git"
+  }
+}
