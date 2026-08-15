@@ -131,13 +131,17 @@ function normalizeDefi(raw, limit) {
 // Tool única e genérica: site + comando + query. Cobre youtube search/feed,
 // twitter trending/timeline, google news/search/trends, bookmarks, etc.
 // A lista de sites vem de opencli list (adapter-first).
-server.tool("site_search", "Pesquisa num site específico via opencli (adapter). Sites: youtube (search/feed/history/subscriptions), twitter (trending/timeline/search/bookmarks), google (news/search/trends), reddit (hot/search), bbc (news), hackernews (top/best). Uso: site + comando + query (query opcional conforme o comando).",
-  { site: z.string().describe("Site (ex: youtube, twitter, google, reddit, bbc, hackernews)"), command: z.string().describe("Comando do site (ex: search, trending, timeline, news, top)"), query: z.string().optional().describe("Query (para comandos de search)"), limit: z.number().optional() },
-  async ({ site, command, query, limit = 5 }) => {
+server.tool("site_search", "Pesquisa num site específico via opencli (adapter). Sites: youtube (search/feed/history/subscriptions/transcript), twitter (trending/timeline/search/bookmarks), google (news/search/trends), reddit (hot/search), bbc (news), hackernews (top/best), defillama (protocols/protocol), linkedin (inbox/posts/people-search). Uso: site + comando + query. Para comandos POSICIONAIS (defillama protocol <slug>, youtube transcript <url>) usar arg (não query).",
+  { site: z.string().describe("Site (ex: youtube, twitter, google, reddit, bbc, hackernews, defillama, linkedin)"), command: z.string().describe("Comando do site (ex: search, trending, timeline, news, top, protocol, transcript, inbox)"), query: z.string().optional().describe("Query (para comandos de search)"), arg: z.string().optional().describe("Argumento posicional para comandos como protocol/transcript (ex: slug, URL de video)"), limit: z.number().optional() },
+  async ({ site, command, query, arg, limit = 5 }) => {
     const args = [site, command];
-    if (query) args.push(query);
-    if (limit) args.push("--limit", String(limit));
-    const d = await cachedOc(`site:${site}:${command}:${query || ""}`, args);
+    if (arg) args.push(arg);
+    else if (query) args.push(query);
+    // --limit só para comandos de listagem (search/news/trending/hot/top/protocols);
+    // comandos posicionais (protocol, transcript, inbox) rejeitam a flag.
+    const LISTING_CMDS = new Set(["search", "news", "trending", "hot", "top", "best", "protocols", "timeline", "feed", "subscriptions", "history"]);
+    if (limit && LISTING_CMDS.has(command)) args.push("--limit", String(limit));
+    const d = await cachedOc(`site:${site}:${command}:${arg || query || ""}`, args);
     return { content: [{ type: "text", text: JSON.stringify(d) }] };
   });
 
