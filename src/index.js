@@ -198,18 +198,31 @@ server.tool("social_sentiment", "Sentimento social de um ticker (X/Twitter auten
   });
 
 // ---- Browser genérico (qualquer site, Chrome bridge autenticado) ----
-server.tool("browser_browse", "Navega para qualquer URL e extrai conteúdo (markdown). Devolve o conteúdo REAL do artigo (não só metadata).",
+server.tool("browser_browse", "Navega para qualquer URL e extrai conteúdo (markdown). Devolve o conteúdo REAL do artigo. FALLBACK: se o opencli web.read falhar/timeout (bridge lento), usa CloakBrowser (stealth).",
   { url: z.string().describe("URL completo") },
   async ({ url }) => {
     // web read usa --url (flag, não posicional) e não aceita --window.
     // O opencli guarda o markdown em web-articles/<site>/<site>.md (cwd ou ~).
-    // Devolver o CONTEÚDO lendo o ficheiro, não só o metadata.
-    const d = await cached(`browse:${url}`, null, () => oc(["web", "read", "--url", url]));
+    // Fallback (15-Ago, lição T2): se o bridge Chrome está lento, o web.read
+    // pendura — usar CloakBrowser (stealth, não depende do bridge) com timeout curto.
+    const d = await cached(`browse:${url}`, null, () => {
+      try {
+        return oc(["web", "read", "--url", url], { timeout: 15000 });
+      } catch {
+        return null; // sinaliza fallback
+      }
+    });
     let result = d;
+    if (!d || d.ok === false) {
+      // fallback: CloakBrowser (stealth, sem bridge)
+      const stealth = await scrapeStealth(url);
+      if (stealth.ok) result = { ...stealth, fallback: "cloakbrowser" };
+      else result = { ok: false, error: "web.read falhou e CloakBrowser também", detail: stealth.error };
+    }
     try {
-      const meta = Array.isArray(d) ? d[0] : d;
+      const meta = Array.isArray(result) ? result[0] : result;
       const saved = meta?.saved;
-      if (saved) {
+      if (saved && !result.html) {
         // candidatos de path: cwd, home, dir do projeto
         const candidates = [path.resolve(saved), path.join(os.homedir(), saved), path.join(__dirname, "..", saved)];
         for (const p of candidates) {
@@ -285,35 +298,44 @@ async def main():
     print(json.dumps({"ok": True, "url": ${JSON.stringify(url)}, "title": title, "len": len(html), "html": html[:${maxBytes}]}))
 asyncio.run(main())
 `;
+async function scrapeStealth(url) {
+  try {
+    const out = execFileSync(CFG.cloakPython, ["-c", CLOAK_SCRIPT(url, CFG.cloakMaxBytes)], {
+      timeout: CFG.timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
+    });
+    const d = JSON.parse(out.trim());
+    const html = d.html || "";
+    return { ok: true, title: d.title, len: d.len, url: d.url, html, html_len: html.length };
+  } catch (e) {
+    const msg = (e.stdout || e.message || "").toString().trim();
+    return { ok: false, error: msg.slice(0, 200) };
+  }
+}
 server.tool("scrape_stealth", "Scraping stealth via CloakBrowser — passa Cloudflare/anti-bot que o curl/opencli falham (403). Devolve HTML renderizado completo.",
   { url: z.string().describe("URL completo") },
   async ({ url }) => {
-    try {
-      const out = execFileSync(CFG.cloakPython, ["-c", CLOAK_SCRIPT(url, CFG.cloakMaxBytes)], {
-        timeout: CFG.timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
-      });
-      const d = JSON.parse(out.trim());
-      // devolver o HTML renderizado COMPLETO (o markup) — o MCP NÃO trunca.
-      // O cap de recolha (cloakMaxBytes) é configurável no config; a webui é
-      // que trunca na visualização (pre 2500 + modal "Ver markup completo").
-      const html = d.html || "";
-      return { content: [{ type: "text", text: JSON.stringify({ ok: true, title: d.title, len: d.len, url: d.url, html, html_len: html.length }) }] };
-    } catch (e) {
-      const msg = (e.stdout || e.message || "").toString().trim();
-      return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: msg.slice(0, 200) }) }] };
-    }
+    const d = await scrapeStealth(url);
+    return { content: [{ type: "text", text: JSON.stringify(d) }] };
   });
 
 // ---- Web search multi-motor (searxng) ----
-server.tool("web_search", "Pesquisa web multi-motor (searxng).",
+server.tool("web_search", "Pesquisa web multi-motor (searxng). Devolve resultados; se o backend estiver degradado (rate-limit/engines suspensas), sinaliza degraded em vez de [] silencioso.",
   { query: z.string().describe("Query"), limit: z.number().optional() },
   async ({ query, limit = 5 }) => {
     const res = await fetch(`${CFG.searxngUrl}/search?q=${encodeURIComponent(query)}&format=json`);
     const d = await res.json();
-    const items = (d.results || []).slice(0, limit).map((r) => ({
+    const raw = d.results || [];
+    const items = raw.slice(0, limit).map((r) => ({
       title: r.title, url: r.url, snippet: (r.content || "").slice(0, 200),
     }));
-    return { content: [{ type: "text", text: JSON.stringify(items) }] };
+    // sinalizar degradação: se searxng devolve 0 mas tem unresponsive_engines /
+    // rate-limit, não devolver [] silencioso (lição T2: devia sinalizar ou fallback)
+    const degraded = items.length === 0 && (
+      Array.isArray(d.unresponsive_engines) && d.unresponsive_engines.length > 0
+      || !d.results
+    );
+    const out = degraded ? { ok: false, degraded: true, error: "searxng sem resultados (engines suspensas/rate-limit)", results: [] } : items;
+    return { content: [{ type: "text", text: JSON.stringify(out) }] };
   });
 
 // ---- Health ----
