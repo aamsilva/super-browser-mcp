@@ -52,3 +52,25 @@ Data: 15-Ago-2026 · Método: cliente MCP real por chamada, timeout 60s · Tools
 - Bridge autenticado: ✅ `youtube whoami logged_in: true`
 - Serve opencode: ✅ `/session 200`
 - Zombies: ✅ 0 (nada ficou pendurado)
+
+## Benchmark Web Scraping (15-Ago-2026, [VERIFICADO])
+
+### Camadas de scraping (mesmo site: news.ycombinator.com)
+| Camada | Tempo | Conteúdo | Uso |
+|---|---|---|---|
+| **opencli web.read** | 2.55s | 154 chars (JSON) | Sites simples, dados estruturados |
+| **agent-browser** (headless) | 0.44s | 46 chars (título) | Extracção leve, sem render |
+| **CloakBrowser** (stealth) | 2.93s | **34,393 chars HTML renderizado** | Cloudflare/anti-bot, JS completo |
+
+### Cenário crítico: expresso.pt (Cloudflare)
+| Método | Resultado |
+|---|---|
+| `curl` direto | **403** (bloqueado) |
+| **CloakBrowser** | **1.81s, 344KB HTML renderizado** ("Expresso | Liberdade para pensar") |
+
+### Conclusões
+1. **CloakBrowser é a única camada que passa Cloudflare** — o opencli web.read e o curl falham a 403.
+2. **CloakBrowser dá o HTML completo renderizado** (34-344KB) vs opencli web.read (154 chars JSON estruturado) — são complementares, não substitutos.
+3. **Latência**: opencli web.read 2.55s (HTTP puro) ≈ CloakBrowser 2.93s (stealth Chromium). O stealth não é mais lento que o HTTP puro em sites normais.
+4. **Hierarquia recomendada**: adapter → opencli web.read → CloakBrowser (se 403/Cloudflare) → agent-browser (extracção leve).
+5. **super-browser-mcp NÃO expõe CloakBrowser ainda** — gap: adicionar tool `scrape_stealth(url)` que usa o venv.

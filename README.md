@@ -3,6 +3,8 @@
 > **As super browser capabilities do Mac Mini, expostas como tools MCP.**
 > Um servidor MCP que dá a qualquer agente/ferramenta — opencode, VS Code, Antigravity, Claude Code, Cursor, ou um daemon na VPS — acesso às capacidades de browsing **autenticado** (X/Twitter, YouTube, Google), finance/trading (barchart, binance, defillama) e pesquisa multi-motor (searxng).
 
+<p align="center"><img src="assets/super-browser-logo.svg" alt="super-browser-mcp" width="120"></p>
+
 [![Node](https://img.shields.io/badge/node-%3E%3D25-blue)](https://nodejs.org)
 [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-1.30.0-6f42c1)](https://github.com/modelcontextprotocol/sdk)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -42,7 +44,27 @@ O X/Twitter, Google, YouTube e Reddit exigem sessões humanas persistentes. Um V
 | `social_sentiment` | **X/Twitter** | **Autenticado** | sentimento real de um ticker |
 | `browser_browse` | opencli web | Autenticado | conteúdo de qualquer URL (markdown) |
 | `web_search` | SearxNG | Público | pesquisa web multi-motor |
+| `scrape_stealth` | CloakBrowser | **Stealth** | scraping Cloudflare/anti-bot (HTML renderizado) |
 | `health` | opencli whoami | — | estado do bridge autenticado |
+
+## Dashboard (webview UI)
+
+`serve_capabilities.py` — dashboard local + API (porta **8097**, acessível por Tailscale):
+
+```
+http://100.74.228.17:8097/        # UI: monitoria, telemetria, testes manuais
+http://100.74.228.17:8097/api/state    # estado vivo (JSON)
+http://100.74.228.17:8097/api/call     # POST {name, args} → chama tool
+http://100.74.228.17:8097/api/history  # telemetria (últimas 30 chamadas)
+```
+
+- **Monitoria**: estado do Chrome bridge, SearXNG, opencode serve (dots OK/FAIL)
+- **Telemetria**: cada chamada registada (tool, ok/fail, latência) em SQLite
+- **Métricas**: chamadas totais, erros, latência p50/p95
+- **Testes manuais**: 9 cards com input real + botão → mostra input/output realtime
+- **UI** com design neutro (não corporativo), logo `assets/super-browser-logo.svg`
+
+Arranque: `python3 serve_capabilities.py` (ou launchd `com.govantis.super-browser-dashboard`).
 
 ## Quickstart
 
