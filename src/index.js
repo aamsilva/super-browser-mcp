@@ -444,4 +444,41 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
+
+// ---- Logging central de TODAS as chamadas tools/call (qualquer fonte: opencode,
+//      VS Code, Antigravity, webui, VPS). O serve_capabilities só logava as
+//      chamadas que passavam por ele (webui/API) — as chamadas diretas via stdio
+//      (opencode T1/T2/T3) NÃO eram logadas (gap provado 15-Ago). ----
+let db = null;
+try {
+  db = new (require("node:sqlite").DatabaseSync)(path.join(__dirname, "..", "capabilities_state.db"));
+  db.exec("CREATE TABLE IF NOT EXISTS calls (id INTEGER PRIMARY KEY, ts REAL, tool TEXT, ok INTEGER, latency_ms REAL, error TEXT, caller TEXT, method TEXT, params TEXT, result TEXT, source TEXT, result_type TEXT, result_summary TEXT)");
+} catch { db = null; }
+function mcpLogCall(tool, ok, ms, error, params, result) {
+  if (!db) return;
+  try {
+    const summary = (() => { try { const j = JSON.parse(result || "{}"); if (Array.isArray(j)) return j.length + " itens"; if (j.error) return "erro: " + String(j.error).slice(0, 60); if (j.authenticated !== undefined) return "authenticated=" + j.authenticated; if (j.title && j.len) return j.title.slice(0, 30) + " (" + j.len + "B)"; if (j.price) return "price=" + j.price; if (j.ok !== undefined) return "ok=" + j.ok; return Object.keys(j).slice(0, 3).map(k => k + "=" + String(j[k]).slice(0, 15)).join(", "); } catch { return (result || "").slice(0, 80); } })();
+    db.prepare("INSERT INTO calls (ts, tool, ok, latency_ms, error, caller, method, params, result, source, result_type, result_summary) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").run(
+      Date.now() / 1000, tool, ok ? 1 : 0, ms, (error || "").slice(0, 300), "mcp-stdio", "mcp-direct", (params || "").slice(0, 300), (result || "").slice(0, 2000), "opencode", ok ? "ok" : "error", String(summary).slice(0, 120));
+  } catch { /* logging nunca deve partir o MCP */ }
+}
+// Interceptar tools/call — registar TODAS as chamadas independentemente da fonte.
+const _origCallTool = server.executeToolHandler ? server.executeToolHandler.bind(server) : null;
+if (_origCallTool) {
+  server.executeToolHandler = async (tool, args, extra) => {
+    const t0 = Date.now();
+    // nome: do tool object (campo variável) ou lookup no registry
+    const name = (tool && (tool.name || (tool.tool && tool.tool.name))) ||
+      (server._registeredTools && Object.keys(server._registeredTools).find(k => server._registeredTools[k] === tool)) || "?";
+    try {
+      const res = await _origCallTool(tool, args, extra);
+      const txt = (res && res.content && res.content[0] && res.content[0].text) || "";
+      mcpLogCall(name, !txt.startsWith('{"ok":false'), Date.now() - t0, "", JSON.stringify(args), txt);
+      return res;
+    } catch (e) {
+      mcpLogCall(name, false, Date.now() - t0, e.message, JSON.stringify(args), "");
+      throw e;
+    }
+  };
+}
 main().catch((e) => { console.error("[super-browser-mcp] fatal:", e.message); process.exit(1); });
