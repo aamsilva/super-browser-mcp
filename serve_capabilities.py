@@ -59,12 +59,23 @@ TOOLS_WITH_EXAMPLES = [(t, _tool_examples().get(t, {}), d) for t, d in TOOLS]
 
 # ---- Estado / telemetria (SQLite simples) ----
 # check_same_thread=False: o ThreadingHTTPServer usa threads por request.
+# Traceability completa: quem (caller), como (method), parâmetros (params),
+# tempo, resultado, dados.
 conn = sqlite3.connect(f"{ROOT}/capabilities_state.db", check_same_thread=False)
-conn.execute("CREATE TABLE IF NOT EXISTS calls (id INTEGER PRIMARY KEY, ts REAL, tool TEXT, ok INTEGER, latency_ms REAL, error TEXT)")
+conn.execute("""CREATE TABLE IF NOT EXISTS calls (
+  id INTEGER PRIMARY KEY, ts REAL, tool TEXT, ok INTEGER, latency_ms REAL, error TEXT,
+  caller TEXT, method TEXT, params TEXT, result TEXT)""")
+# migração: adicionar colunas se não existirem (BD antiga)
+for col in ("caller", "method", "params", "result"):
+    try:
+        conn.execute(f"ALTER TABLE calls ADD COLUMN {col} TEXT")
+    except sqlite3.OperationalError:
+        pass  # já existe
 conn.commit()
 
-def log_call(tool, ok, ms, error=""):
-    conn.execute("INSERT INTO calls (ts, tool, ok, latency_ms, error) VALUES (?,?,?,?,?)", (time.time(), tool, 1 if ok else 0, ms, error[:200]))
+def log_call(tool, ok, ms, error="", caller="webui", method="mcp-stdio", params="", result=""):
+    conn.execute("INSERT INTO calls (ts, tool, ok, latency_ms, error, caller, method, params, result) VALUES (?,?,?,?,?,?,?,?,?)",
+                 (time.time(), tool, 1 if ok else 0, ms, (error or "")[:300], caller, method, (params or "")[:300], (result or "")[:500]))
     conn.commit()
 
 def state_snapshot():
@@ -107,12 +118,13 @@ def state_snapshot():
         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
 
-def call_tool(name, args):
-    """Chama uma tool MCP via subprocess (cliente MCP simples over stdio)."""
+def call_tool(name, args, caller="webui"):
+    """Chama uma tool MCP via subprocess (cliente MCP simples over stdio).
+    Traceability: regista quem (caller), como (method), parâmetros, resultado."""
     t0 = time.time()
     try:
         p = subprocess.Popen([MCP_BIN], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        init = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "webui", "version": "1"}}}
+        init = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": caller, "version": "1"}}}
         p.stdin.write(json.dumps(init) + "\n")
         p.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": name, "arguments": args}}) + "\n")
         p.stdin.flush()
@@ -132,7 +144,7 @@ def call_tool(name, args):
         p.kill()
         ms = (time.time() - t0) * 1000
         ok = bool(out) and '"error"' not in out[:50]
-        log_call(name, ok, ms, "" if ok else out[:200])
+        log_call(name, ok, ms, "" if ok else out[:200], caller=caller, method="mcp-stdio", params=json.dumps(args)[:300], result=out[:500])
         return {"ok": ok, "latency_ms": round(ms), "result": out[:8000]}
     except Exception as e:
         ms = (time.time() - t0) * 1000
@@ -240,7 +252,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif u.path == "/api/state":
             self._json(state_snapshot())
         elif u.path == "/api/history":
-            rows = [{"ts": time.strftime("%H:%M:%S", time.localtime(r[0])), "tool": r[1], "ok": bool(r[2]), "latency_ms": r[3]} for r in conn.execute("SELECT ts, tool, ok, latency_ms FROM calls ORDER BY id DESC LIMIT 30")]
+            rows = [{"ts": time.strftime("%H:%M:%S", time.localtime(r[0])), "tool": r[1], "ok": bool(r[2]), "latency_ms": r[3], "caller": r[4] or "?", "method": r[5] or "?", "params": (r[6] or "")[:80]} for r in conn.execute("SELECT ts, tool, ok, latency_ms, caller, method, params FROM calls ORDER BY id DESC LIMIT 30")]
+            self._json(rows)
+        elif u.path == "/api/trace":
+            # traceability completa: quem, como, params, tempo, resultado, erro
+            rows = [{"id": r[0], "ts": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r[1])), "tool": r[2], "ok": bool(r[3]), "latency_ms": round(r[4], 1), "error": r[5] or "", "caller": r[6] or "?", "method": r[7] or "?", "params": r[8] or "", "result": (r[9] or "")[:300]} for r in conn.execute("SELECT id, ts, tool, ok, latency_ms, error, caller, method, params, result FROM calls ORDER BY id DESC LIMIT 100")]
             self._json(rows)
         else:
             self._json({"error": "not found"}, 404)
@@ -249,7 +265,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if u.path == "/api/call":
             try:
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0) or b"{}")
-                res = call_tool(body.get("name", ""), body.get("args", {}))
+                res = call_tool(body.get("name", ""), body.get("args", {}), caller=body.get("caller", "webui"))
                 self._json(res)
             except Exception as e:
                 self._json({"ok": False, "error": str(e)}, 500)
