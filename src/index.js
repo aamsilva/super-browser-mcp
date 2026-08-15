@@ -135,8 +135,8 @@ function normalizeDefi(raw, limit) {
 // twitter trending/timeline, google news/search/trends, bookmarks, etc.
 // A lista de sites vem de opencli list (adapter-first).
 server.tool("site_search", "Pesquisa num site específico via opencli (adapter). Sites: youtube (search/feed/history/subscriptions/transcript), twitter (trending/timeline/search/bookmarks), google (news/search/trends), reddit (hot/search), bbc (news), hackernews (top/best), defillama (protocols/protocol), linkedin (inbox/posts/people-search). Uso: site + comando + query. Para comandos POSICIONAIS (defillama protocol <slug>, youtube transcript <url>) usar arg (não query).",
-  { site: z.string().describe("Site (ex: youtube, twitter, google, reddit, bbc, hackernews, defillama, linkedin)"), command: z.string().describe("Comando do site (ex: search, trending, timeline, news, top, protocol, transcript, inbox)"), query: z.string().optional().describe("Query (para comandos de search)"), arg: z.string().optional().describe("Argumento posicional para comandos como protocol/transcript (ex: slug, URL de video)"), limit: z.number().optional() },
-  async ({ site, command, query, arg, limit = 5 }) => {
+  { site: z.string().describe("Site (ex: youtube, twitter, google, reddit, bbc, hackernews, defillama, linkedin)"), command: z.string().describe("Comando do site (ex: search, trending, timeline, news, top, protocol, transcript, inbox)"), query: z.string().optional().describe("Query (para comandos de search)"), arg: z.string().optional().describe("Argumento posicional para comandos como protocol/transcript (ex: slug, URL de video)"), limit: z.number().optional(), fresh: z.number().optional().describe("Filtro de frescura (P3-6, feedback T2): só resultados com date <= N dias de idade. Aplica a google news.") },
+  async ({ site, command, query, arg, limit = 5, fresh }) => {
     const args = [site, command];
     if (arg) args.push(arg);
     else if (query) args.push(query);
@@ -145,6 +145,38 @@ server.tool("site_search", "Pesquisa num site específico via opencli (adapter).
     const LISTING_CMDS = new Set(["search", "news", "trending", "hot", "top", "best", "protocols", "timeline", "feed", "subscriptions", "history"]);
     if (limit && LISTING_CMDS.has(command)) args.push("--limit", String(limit));
     const d = await cachedOc(`site:${site}:${command}:${arg || query || ""}`, args);
+    // P1-1 fix (feedback T2 15-Ago): youtube channel devolve field/value — normalizar
+    // para objeto estruturado com channelId direto (news-intel RSS dinâmico sem parse).
+    if (site === "youtube" && command === "channel" && Array.isArray(d)) {
+      const meta = {};
+      const recent_videos = [];
+      const META_FIELDS = new Set(["channelId", "description", "handle", "keywords", "name", "subscribers", "url"]);
+      for (const it of d) {
+        const f = it?.field, v = it?.value;
+        if (!f) continue;
+        if (f === "---" || /Recent Videos/.test(String(v))) continue;
+        // vídeo: title no FIELD, value = "dur | channel | url"
+        const parts = String(v).split(" | ");
+        const durMatch = parts[0]?.match(/^(\d+:\d\d:\d\d|\d+:\d\d)$/);
+        if (parts.length >= 3 && durMatch) {
+          recent_videos.push({ title: f.trim(), duration: durMatch[1], channel: parts[1].trim(), url: parts[2].trim() });
+          continue;
+        }
+        if (META_FIELDS.has(f)) meta[f] = v;
+      }
+      if (meta.channelId) return { content: [{ type: "text", text: JSON.stringify({ ...meta, recent_videos }) }] };
+    }
+    // P3-6 fix (feedback T2 15-Ago): google news tem campo date mas não ordena por
+    // recência. Ordenar desc por date; se fresh=N, filtrar resultados mais velhos que N dias.
+    if (site === "google" && command === "news" && Array.isArray(d)) {
+      const parseDate = (s) => { const t = Date.parse(s || ""); return isNaN(t) ? 0 : t; };
+      const sorted = d.filter(it => it && (it.date !== undefined || fresh === undefined))
+        .map(it => ({ ...it, _t: parseDate(it?.date) }))
+        .sort((a, b) => b._t - a._t)
+        .map(({ _t, ...rest }) => rest);
+      const out = fresh ? sorted.filter(it => it.date && (Date.now() - parseDate(it.date)) <= fresh * 86400000) : sorted;
+      if (out.length > 0) return { content: [{ type: "text", text: JSON.stringify(out) }] };
+    }
     return { content: [{ type: "text", text: JSON.stringify(d) }] };
   });
 
@@ -209,7 +241,16 @@ server.tool("finance_defi", "Top DeFi por TVL (defillama).",
 server.tool("social_sentiment", "Sentimento social de um ticker (X/Twitter autenticado).",
   { query: z.string().describe("Query (ex: NVDA OR NVIDIA)"), limit: z.number().optional() },
   async ({ query, limit = 5 }) => {
-    const d = oc(["twitter", "search", query, "--limit", String(limit)]);
+    // P2-3 fix (feedback T2 15-Ago): connection closed intermitente no 1º try (~1/5) —
+    // retry 1x antes de falhar.
+    let d;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        d = oc(["twitter", "search", query, "--limit", String(limit)]);
+        if (d && d.ok !== false && !d.error) break;
+      } catch { /* retry */ }
+    }
+    if (!d) d = { ok: false, error: "twitter search falhou 2x (connection closed)" };
     return { content: [{ type: "text", text: JSON.stringify(d) }] };
   });
 
@@ -277,6 +318,9 @@ const POS_ARGS = new Set(["target", "text", "option", "direction", "key", "js", 
 // abria um browser novo e perdia o contexto da página. O opencli browser exige
 // <session> — usamos uma fixa (config browser.defaultSession) para a UI/agente.
 const DEFAULT_SESSION = CFG.defaultSession;
+// P1-2 (feedback T2 15-Ago): registry de sessions usadas → tab list com args.all
+// agrega todas (cross-session), não só a master.
+const KNOWN_SESSIONS = new Set([DEFAULT_SESSION]);
 function browserExec(action, args, session, windowMode) {
   const cmd = [action];
   for (const [k, v] of Object.entries(args || {})) {
@@ -297,6 +341,17 @@ server.tool("browser_act", `Executa uma ação de automação browser no Chrome 
   { action: z.string().describe(`Ação: ${ACTIONS_LIST.join(" | ")}`), args: z.record(z.any()).optional().describe("Argumentos da ação (ver schema de cada ação)"), session: z.string().optional().describe("Nome da sessão browser (default mcp-main; usar diferente para isolamento)"), window: z.string().optional().describe("Modo da janela: background (default, invisível) ou foreground (VISÍVEL — para auth manual pelo utilizador)") },
   async ({ action, args = {}, session = DEFAULT_SESSION, window: windowMode }) => {
     if (!BROWSER_ACTIONS[action]) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: `Ação inválida: ${action}. Disponíveis: ${ACTIONS_LIST.join(", ")}` }) }] };
+    // P1-2 fix (feedback T2 15-Ago): registo de sessions conhecidas → tab list pode
+    // agregar todas as sessions (verificar auto-close cross-session), não só a master.
+    KNOWN_SESSIONS.add(session);
+    if (action === "tab" && args.action === "list" && args.all) {
+      const out = {};
+      for (const s of KNOWN_SESSIONS) {
+        try { out[s] = browserExec("tab", { action: "list" }, s); }
+        catch { out[s] = []; }
+      }
+      return { content: [{ type: "text", text: JSON.stringify(out) }] };
+    }
     try {
       // GESTÃO DE RECURSOS NATIVA (regra user 15-Ago): limite de tabs por sessão (LRU).
       // Ao abrir tab, se exceder maxTabs, fechar a mais antiga — nunca acumular.
