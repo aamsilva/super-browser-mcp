@@ -50,7 +50,7 @@ function loadConfig() {
     cloakMaxBytes: Number(e("SUPER_BROWSER_MAX_HTML", file.cloak?.maxHtmlBytes || 2000000)),
     searxngUrl: e("SUPER_BROWSER_SEARXNG_URL", file.searxng?.url || "http://localhost:8081"),
     defaultSession: e("SUPER_BROWSER_SESSION", file.browser?.defaultSession || "mcp-main"),
-    maxTabs: Number(e("SUPER_BROWSER_MAX_TABS", file.browser?.maxTabs || 10)),
+    maxTabs: Number(e("SUPER_BROWSER_MAX_TABS", file.browser?.maxTabs || 30)),
     autoCloseRead: e("SUPER_BROWSER_AUTOCLOSE", String(file.browser?.autoCloseRead ?? true)) !== "false",
     timeoutMs: Number(e("SUPER_BROWSER_TIMEOUT_MS", file.cloak?.timeoutMs || 45000)),
   };
@@ -288,13 +288,15 @@ server.tool("browser_act", `Executa uma ação de automação browser no Chrome 
     try {
       // GESTÃO DE RECURSOS NATIVA (regra user 15-Ago): limite de tabs por sessão (LRU).
       // Ao abrir tab, se exceder maxTabs, fechar a mais antiga — nunca acumular.
+      // REGRA MASTER (user 20:10): a tab master (index 0 = tab de SESSÃO que mantém a
+      // comunicação do bridge) NUNCA pode ser fechada. Ao fazer LRU, só fecha tabs >0.
       if (action === "tab" && args.action === "new") {
         try {
           const list = browserExec("tab", { action: "list" }, session);
           const count = (String(list).match(/"index"/g) || []).length;
           if (count >= CFG.maxTabs) {
-            // fechar a tab mais antiga (primeira da lista) antes de abrir a nova
-            try { browserExec("tab", { action: "close", index: "0" }, session); } catch { /* LRU best-effort */ }
+            // fechar a tab mais antiga de TESTE (índice >=1) — NUNCA a master (índice 0)
+            try { browserExec("tab", { action: "close", index: "1" }, session); } catch { /* LRU best-effort */ }
           }
         } catch { /* se não conseguir listar, abrir mesmo assim */ }
       }
@@ -302,17 +304,22 @@ server.tool("browser_act", `Executa uma ação de automação browser no Chrome 
       // AUTO-CLOSE (regra user 15-Ago): ações de LEITURA consomem a info e fecham
       // a tab IMEDIATAMENTE (minimizar tempo aberto = memória). Ações interativas
       // (open/fill/click/type/wait) NÃO fecham — o agente precisa da sessão ativa.
+      // REGRA MASTER: o close NUNCA fecha a sessão principal se ela é a master
+      // (DEFAULT_SESSION) — fechar todas as tabs mataria a comunicação do bridge.
       const READ_ACTIONS = new Set(["extract", "state", "eval", "screenshot", "get", "tab"]);
       if (READ_ACTIONS.has(action) && CFG.autoCloseRead) {
-        try { browserExec("close", {}, session); } catch { /* fechar best-effort */ }
-        // VERIFICAÇÃO END-TO-END (lição user 15-Ago): após fechar, confirmar 0 tabs
-        // reais (não só fechar a sessão — garantir que o Chrome físico ficou limpo).
+        const isMaster = session === DEFAULT_SESSION;
+        if (!isMaster) {
+          // sessão de teste/efémera → fechar tudo
+          try { browserExec("close", {}, session); } catch { /* fechar best-effort */ }
+        }
+        // VERIFICAÇÃO END-TO-END: confirmar quantas tabs restam (master preservada)
         let remaining = "?";
         try {
           const check = browserExec("tab", { action: "list" }, session);
-          remaining = String(check).match(/"index"/g) ? String(check).match(/"index"/g).length : 0;
-        } catch { remaining = 0; }
-        return { content: [{ type: "text", text: JSON.stringify({ ...d, auto_closed: true, tabs_remaining: remaining }) }] };
+          remaining = String(check).match(/"index"/g) ? String(check).match(/"index"/g).length : (isMaster ? 1 : 0);
+        } catch { remaining = isMaster ? 1 : 0; }
+        return { content: [{ type: "text", text: JSON.stringify({ ...d, auto_closed: !isMaster, master_preserved: isMaster, tabs_remaining: remaining }) }] };
       }
       return { content: [{ type: "text", text: JSON.stringify(d) }] };
     } catch (e) {
