@@ -171,9 +171,10 @@ def _coerce(v):
             pass
     return v
 
-def call_tool(name, args, caller="webui"):
+def call_tool(name, args, caller="webui", source="api"):
     """Chama uma tool MCP via subprocess (cliente MCP simples over stdio).
-    Traceability: regista quem (caller), como (method), parâmetros, resultado.
+    Traceability: regista quem (caller), como (method), de onde (source),
+    parâmetros, tempo, resultado.
     Coerce de tipos: a webui envia tudo como string ("3", "NVDA", {"a":"b"}).
     Converter strings numéricas → number e strings JSON → objetos, para o zod
     do MCP aceitar (sem isto dá MCP error -32602 Invalid arguments)."""
@@ -201,11 +202,11 @@ def call_tool(name, args, caller="webui"):
         p.kill()
         ms = (time.time() - t0) * 1000
         ok = bool(out) and '"error"' not in out[:50]
-        log_call(name, ok, ms, "" if ok else out[:200], caller=caller, method="mcp-stdio", params=json.dumps(args)[:300], result=out[:500])
-        return {"ok": ok, "latency_ms": round(ms), "result": out[:8000]}
+        log_call(name, ok, ms, "" if ok else out[:200], caller=caller, method="mcp-stdio", params=json.dumps(args)[:300], result=out[:500], source=source)
+        return {"ok": ok, "latency_ms": round(ms), "result": out[:8000], "source": source}
     except Exception as e:
         ms = (time.time() - t0) * 1000
-        log_call(name, False, ms, str(e))
+        log_call(name, False, ms, str(e), source=source)
         return {"ok": False, "latency_ms": round(ms), "error": str(e)[:300]}
 
 PAGE = """<!DOCTYPE html><html lang="pt"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -288,7 +289,7 @@ pre.textContent=(ok?'✓ OK':'✗ FAIL')+' — '+j.latency_ms+'ms\\n'+JSON.strin
 b.disabled=false;snap();hist();};
 d.appendChild(b);d.appendChild(pre);toolsEl.appendChild(d);});
 async function hist(){try{const r=await fetch('/api/history');const rows=await r.json();
-document.getElementById('hist').innerHTML='<tr><th>Hora</th><th>Tool</th><th>Resultado</th><th>Latência</th></tr>'+rows.map(x=>`<tr><td>${x.ts}</td><td>${x.tool}</td><td class="${x.ok?'ok-tag':'fail-tag'}">${x.ok?'OK':'FAIL'}</td><td>${Math.round(x.latency_ms)}ms</td></tr>`).join('');}catch(e){}}
+document.getElementById('hist').innerHTML='<tr><th>Hora</th><th>Source</th><th>Caller</th><th>Tool</th><th>Resultado</th><th>Latência</th><th>Resumo</th></tr>'+rows.map(x=>`<tr><td>${x.ts}</td><td>${x.source||'?'}</td><td>${x.caller||'?'}</td><td>${x.tool}</td><td class="${x.ok?'ok-tag':'fail-tag'}">${x.ok?'OK':'FAIL'}</td><td>${Math.round(x.latency_ms)}ms</td><td title="${(x.summary||'').replace(/"/g,'&quot;')}">${(x.summary||'').slice(0,40)}</td></tr>`).join('');}catch(e){}}
 document.getElementById('footer').textContent='super-browser-mcp v1.0 · serve_capabilities.py · ' + new Date().toISOString().slice(0,10);
 snap();hist();setInterval(snap,15000);
 </script></body></html>"""
@@ -296,6 +297,30 @@ snap();hist();setInterval(snap,15000);
 # TOOLS_JSON injetado via replace() (a string é literal, não f-string — senão os
 # { } do JS/CSS conflitam com a interpolação Python).
 PAGE = PAGE.replace("__TOOLS_JSON__", json.dumps([{"name": t[0], "args": t[1], "desc": t[2]} for t in TOOLS_WITH_EXAMPLES]))
+
+def detect_source(client_ip, header_source=None):
+    """Deteta a SOURCE que invoca o MCP: local, vps, macbook-neo, lan, remoto.
+    Prioridade: header X-Source (se o cliente declara) > IP do cliente.
+    Config: server.sources (mapeamento IP->nome) em config.json."""
+    if header_source:
+        return header_source
+    ip = client_ip or ""
+    ip = ip.split(":")[0]  # tira porta
+    try:
+        c = json.load(open(f"{ROOT}/config.json"))
+        sources = c.get("server", {}).get("sources", {})
+        if ip in sources:
+            return sources[ip]
+        ts = c.get("server", {}).get("tailscaleIp", "100.74.228.17")
+        if ip == "127.0.0.1" or ip == "::1":
+            return "local"
+        if ip == ts:
+            return "tailscale-macmini"
+        if ip == "100.117.34.80":
+            return "vps-ares"
+        return f"remoto-{ip}"
+    except Exception:
+        return "local" if ip in ("127.0.0.1", "::1") else f"remoto-{ip}"
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -311,7 +336,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif u.path == "/api/state":
             self._json(state_snapshot())
         elif u.path == "/api/history":
-            rows = [{"ts": time.strftime("%H:%M:%S", time.localtime(r[0])), "tool": r[1], "ok": bool(r[2]), "latency_ms": r[3], "caller": r[4] or "?", "method": r[5] or "?", "params": (r[6] or "")[:80], "summary": r[7] or ""} for r in conn.execute("SELECT ts, tool, ok, latency_ms, caller, method, params, result_summary FROM calls ORDER BY id DESC LIMIT 30")]
+            rows = [{"ts": time.strftime("%H:%M:%S", time.localtime(r[0])), "tool": r[1], "ok": bool(r[2]), "latency_ms": r[3], "caller": r[4] or "?", "method": r[5] or "?", "params": (r[6] or "")[:80], "summary": r[7] or "", "source": r[8] or "?"} for r in conn.execute("SELECT ts, tool, ok, latency_ms, caller, method, params, result_summary, source FROM calls ORDER BY id DESC LIMIT 30")]
             self._json(rows)
         elif u.path == "/api/trace":
             # traceability completa: quem, como, params, tempo, resultado, resumo
@@ -324,7 +349,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if u.path == "/api/call":
             try:
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0) or b"{}")
-                res = call_tool(body.get("name", ""), body.get("args", {}), caller=body.get("caller", "webui"))
+                client_ip = self.client_address[0] if self.client_address else ""
+                src = detect_source(client_ip, body.get("source") or self.headers.get("X-Source"))
+                res = call_tool(body.get("name", ""), body.get("args", {}), caller=body.get("caller", "webui"), source=src)
+                res["source"] = src
                 self._json(res)
             except Exception as e:
                 self._json({"ok": False, "error": str(e)}, 500)

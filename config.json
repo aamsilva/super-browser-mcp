@@ -26,7 +26,12 @@
   "server": {
     "root": "/Volumes/disco1tb/tools/super-browser-mcp",
     "node": "/Users/augustosilva/.opencode/bin/node",
-    "tailscaleIp": "100.74.228.17"
+    "tailscaleIp": "100.74.228.17",
+    "sources": {
+      "127.0.0.1": "local",
+      "100.117.34.80": "vps-ares",
+      "100.74.228.17": "tailscale-macmini"
+    }
   },
   "ui": {
     "toolExamples": {

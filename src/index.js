@@ -34,6 +34,7 @@ const { execFileSync } = require("child_process");
 const { z } = require("zod");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 
 // ---- Config (genérico: env > config.json > default) ----
 function loadConfig() {
@@ -197,12 +198,30 @@ server.tool("social_sentiment", "Sentimento social de um ticker (X/Twitter auten
   });
 
 // ---- Browser genérico (qualquer site, Chrome bridge autenticado) ----
-server.tool("browser_browse", "Navega para qualquer URL e extrai conteúdo (markdown).",
+server.tool("browser_browse", "Navega para qualquer URL e extrai conteúdo (markdown). Devolve o conteúdo REAL do artigo (não só metadata).",
   { url: z.string().describe("URL completo") },
   async ({ url }) => {
-    // web read usa --url (flag, não posicional) e não aceita --window
+    // web read usa --url (flag, não posicional) e não aceita --window.
+    // O opencli guarda o markdown em web-articles/<site>/<site>.md (cwd ou ~).
+    // Devolver o CONTEÚDO lendo o ficheiro, não só o metadata.
     const d = await cached(`browse:${url}`, null, () => oc(["web", "read", "--url", url]));
-    return { content: [{ type: "text", text: JSON.stringify(d) }] };
+    let result = d;
+    try {
+      const meta = Array.isArray(d) ? d[0] : d;
+      const saved = meta?.saved;
+      if (saved) {
+        // candidatos de path: cwd, home, dir do projeto
+        const candidates = [path.resolve(saved), path.join(os.homedir(), saved), path.join(__dirname, "..", saved)];
+        for (const p of candidates) {
+          if (fs.existsSync(p)) {
+            const content = fs.readFileSync(p, "utf8").slice(0, 50000); // cap 50KB
+            result = { ...meta, content, content_len: content.length, saved: p };
+            break;
+          }
+        }
+      }
+    } catch { /* devolve metadata se não conseguir ler */ }
+    return { content: [{ type: "text", text: JSON.stringify(result) }] };
   });
 
 // ---- AUTOMAÇÃO browser interativa (fill/click/type/select/... no Chrome bridge).
