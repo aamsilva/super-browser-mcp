@@ -154,7 +154,16 @@ server.tool("finance_quote", "Cotações e dados de ações (barchart).",
   async ({ symbol }) => {
     // cache TTL 60s: o barchart via opencli é lento (~2-9s); cache elimina o spawn
     const d = await cachedOc(`quote:${symbol}`, ["barchart", "quote", symbol]);
-    return { content: [{ type: "text", text: JSON.stringify(d) }] };
+    // P1 fix (feedback T1 15-Ago): o adapter barchart devolve marketCap em MILHARES
+    // (NVDA 5,448,872,320 = $5.4T). Normalizar ×1000 → dólares, em todas as posições.
+    const items = Array.isArray(d) ? d : [d];
+    for (const it of items) {
+      if (it && typeof it.marketCap === "string" || typeof it.marketCap === "number") {
+        const n = Number(String(it.marketCap).replace(/,/g, ""));
+        if (Number.isFinite(n) && n > 0) it.marketCap = n * 1000;
+      }
+    }
+    return { content: [{ type: "text", text: JSON.stringify(items.length === 1 && Array.isArray(d) ? items : items[0]) }] };
   });
 
 server.tool("finance_options", "Cadeia de opções + greeks + IV (barchart).",
@@ -214,7 +223,9 @@ server.tool("browser_browse", "Navega para qualquer URL e extrai conteúdo (mark
     // pendura — usar CloakBrowser (stealth, não depende do bridge) com timeout curto.
     const d = await cached(`browse:${url}`, null, () => {
       try {
-        return oc(["web", "read", "--url", url], { timeout: 15000 });
+        // P2 fix (feedback T1 15-Ago): amazon order-history demora >15s a renderizar.
+        // Timeout 15s → 30s antes de cair no fallback CloakBrowser.
+        return oc(["web", "read", "--url", url], { timeout: 30000 });
       } catch {
         return null; // sinaliza fallback
       }
@@ -375,7 +386,20 @@ import asyncio, cloakbrowser, json
 async def main():
     browser = await cloakbrowser.launch_async(headless=True)
     page = await browser.new_page()
-    await page.goto(${JSON.stringify(url)}, timeout=25000, wait_until="domcontentloaded")
+    await page.goto(${JSON.stringify(url)}, timeout=30000, wait_until="domcontentloaded")
+    # P4 fix (feedback T1 15-Ago): domcontentloaded NÃO carrega lazy-load (expresso 326KB
+    # truncado). Scroll até ao fundo 3x para forçar render + esperar networkidle.
+    try:
+        await page.wait_for_load_state("networkidle", timeout=8000)
+    except Exception:
+        pass
+    for _ in range(3):
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        await asyncio.sleep(0.5)
+        try:
+            await page.wait_for_load_state("networkidle", timeout=4000)
+        except Exception:
+            pass
     html = await page.content()
     title = await page.title()
     await browser.close()
