@@ -14,22 +14,48 @@ import http.server, json, os, subprocess, time, threading, sqlite3
 from urllib.parse import urlparse, parse_qs
 
 PORT = 8097
-ROOT = "/Volumes/disco1tb/tools/super-browser-mcp"
+ROOT = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = f"{ROOT}/capabilities_state.json"
 MCP_BIN = f"{ROOT}/bin/super-browser-mcp.sh"
-OPENCLI = "/opt/homebrew/bin/opencli"
 
+# Config genérico (env > config.json) — sem hardcoded de máquina específica.
+def _cfg(k, d):
+    env = {"OPENCLI": "SUPER_BROWSER_OPENCLI", "SEARXNG": "SUPER_BROWSER_SEARXNG_URL",
+           "TAILSCALE": "SUPER_BROWSER_TAILSCALE_IP"}
+    if os.environ.get(env.get(k, "__none__")):
+        return os.environ[env[k]]
+    try:
+        c = json.load(open(f"{ROOT}/config.json"))
+        if k == "TAILSCALE":
+            return c.get("server", {}).get("tailscaleIp", d)
+        v = c.get(k.lower(), d)
+        return v.get("bin") if isinstance(v, dict) and "bin" in v else (v.get("url") if isinstance(v, dict) and "url" in v else v)
+    except Exception:
+        return d
+OPENCLI = _cfg("OPENCLI", "/opt/homebrew/bin/opencli")
+SEARXNG_URL = _cfg("SEARXNG", "http://localhost:8081")
+TAILSCALE_IP = _cfg("TAILSCALE", "100.74.228.17")
+
+# Tools expostas + exemplos de input (exemplos vêm de config.json ui.toolExamples
+# — não hardcoded; cada tool é genérica, o exemplo é só preenchimento da UI).
+def _tool_examples():
+    try:
+        return json.load(open(f"{ROOT}/config.json")).get("ui", {}).get("toolExamples", {})
+    except Exception:
+        return {}
 TOOLS = [
-    ("finance_quote", {"symbol": "NVDA"}, "Preço de ação (barchart)"),
-    ("finance_options", {"symbol": "AAPL"}, "Options chain + greeks"),
-    ("finance_crypto", {"pair": "BTCUSDT"}, "Preço crypto (binance)"),
-    ("finance_defi", {"limit": 3}, "Top DeFi por TVL"),
-    ("social_sentiment", {"query": "NVDA OR NVIDIA", "limit": 3}, "Sentimento X/Twitter"),
-    ("browser_browse", {"url": "https://news.ycombinator.com"}, "Ler página (markdown)"),
-    ("web_search", {"query": "MCP server", "limit": 3}, "Pesquisa web multi-motor"),
-    ("scrape_stealth", {"url": "https://expresso.pt"}, "Scraping stealth (Cloudflare)"),
-    ("health", {}, "Estado do bridge"),
+    ("finance_quote", "Preço de ação (barchart)"),
+    ("finance_options", "Options chain + greeks"),
+    ("finance_crypto", "Preço crypto (binance)"),
+    ("finance_defi", "Top DeFi por TVL"),
+    ("social_sentiment", "Sentimento X/Twitter"),
+    ("browser_browse", "Ler página (markdown)"),
+    ("browser_act", "Automação browser (fill/click/type)"),
+    ("web_search", "Pesquisa web multi-motor"),
+    ("scrape_stealth", "Scraping stealth (Cloudflare)"),
+    ("health", "Estado do bridge"),
 ]
+TOOLS_WITH_EXAMPLES = [(t, _tool_examples().get(t, {}), d) for t, d in TOOLS]
 
 # ---- Estado / telemetria (SQLite simples) ----
 # check_same_thread=False: o ThreadingHTTPServer usa threads por request.
@@ -53,7 +79,7 @@ def state_snapshot():
     def searxng():
         try:
             import urllib.request
-            with urllib.request.urlopen("http://localhost:8081/", timeout=4):
+            with urllib.request.urlopen(SEARXNG_URL + "/", timeout=4):
                 return True
         except Exception:
             return False
@@ -198,7 +224,7 @@ snap();hist();setInterval(snap,15000);
 
 # TOOLS_JSON injetado via replace() (a string é literal, não f-string — senão os
 # { } do JS/CSS conflitam com a interpolação Python).
-PAGE = PAGE.replace("__TOOLS_JSON__", json.dumps([{"name": t[0], "args": t[1], "desc": t[2]} for t in TOOLS]))
+PAGE = PAGE.replace("__TOOLS_JSON__", json.dumps([{"name": t[0], "args": t[1], "desc": t[2]} for t in TOOLS_WITH_EXAMPLES]))
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -231,5 +257,5 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json({"error": "not found"}, 404)
 
 if __name__ == "__main__":
-    print(f"serve_capabilities: http://0.0.0.0:{PORT}/  (Tailscale: http://100.74.228.17:{PORT}/)", flush=True)
+    print(f"serve_capabilities: http://0.0.0.0:{PORT}/  (Tailscale: http://{TAILSCALE_IP}:{PORT}/)", flush=True)
     http.server.ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
