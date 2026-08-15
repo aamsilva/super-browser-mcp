@@ -432,13 +432,14 @@ server.tool("web_search", "Pesquisa web: Google (opencli, autenticado) PRIMÁRIO
   });
 
 // ---- Health ----
+const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
 server.tool("health", "Estado do super-browser-mcp + conectividade.",
   {},
   async () => {
     const bridge = oc(["youtube", "whoami"]);
     return { content: [{ type: "text", text: JSON.stringify({
       ok: true, bridge_auth: bridge && bridge.logged_in ? "logged_in" : "unknown",
-      version: "1.2.0", time: new Date().toISOString(),
+      version: pkg.version, time: new Date().toISOString(),
     }) }] };
   });
 
