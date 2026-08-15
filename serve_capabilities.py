@@ -314,7 +314,7 @@ const r=await fetch('/api/trace?hours=0');const rows=await r.json();const x=rows
 document.getElementById('modal').style.display='flex';
 document.getElementById('modal-title').textContent=x.tool+' · '+x.ts+' · '+x.caller+' · '+x.latency_ms+'ms · '+((x.ok)?'OK':'FAIL');
 document.getElementById('modal-body').textContent=
- 'PARAMS:\n'+(x.params||'(vazio)')+'\n\nRESULT:\n'+(x.result||'(vazio)')+'\n\nSUMMARY:\n'+(x.summary||'(vazio)')+'\n\nERROR:\n'+(x.error||'(sem erro)');
+ 'PARAMS:\\n'+(x.params||'(vazio)')+'\\n\\nRESULT:\\n'+(x.result||'(vazio)')+'\\n\\nSUMMARY:\\n'+(x.summary||'(vazio)')+'\\n\\nERROR:\\n'+(x.error||'(sem erro)');
 }catch(e){}}
 document.getElementById('footer').textContent='super-browser-mcp v1.0 · serve_capabilities.py · ' + new Date().toISOString().slice(0,10);
 snap();hist();setInterval(()=>{snap();hist();},15000);
