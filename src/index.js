@@ -200,7 +200,8 @@ server.tool("social_sentiment", "Sentimento social de um ticker (X/Twitter auten
 server.tool("browser_browse", "Navega para qualquer URL e extrai conteúdo (markdown).",
   { url: z.string().describe("URL completo") },
   async ({ url }) => {
-    const d = oc(["web", "read", url]);
+    // web read usa --url (flag, não posicional) e não aceita --window
+    const d = await cached(`browse:${url}`, null, () => oc(["web", "read", "--url", url]));
     return { content: [{ type: "text", text: JSON.stringify(d) }] };
   });
 

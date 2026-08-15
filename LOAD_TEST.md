@@ -74,3 +74,31 @@ Data: 15-Ago-2026 · Método: cliente MCP real por chamada, timeout 60s · Tools
 3. **Latência**: opencli web.read 2.55s (HTTP puro) ≈ CloakBrowser 2.93s (stealth Chromium). O stealth não é mais lento que o HTTP puro em sites normais.
 4. **Hierarquia recomendada**: adapter → opencli web.read → CloakBrowser (se 403/Cloudflare) → agent-browser (extracção leve).
 5. **super-browser-mcp NÃO expõe CloakBrowser ainda** — gap: adicionar tool `scrape_stealth(url)` que usa o venv.
+
+## Load Test v2 (15-Ago-2026) — após cache TTL + HTTP direto
+
+### Cenário A — Tools HTTP-only (finance_crypto/defi/web_search, sem Chrome bridge)
+| Chamadas | Concurr. | OK | Erros % | Throughput | Wall |
+|---|---|---|---|---|---|
+| 120 | 40 | 120 | **0%** | **12.74 req/s** | 9.4s |
+| 250 | 100 | 250 | **0%** | **11.62 req/s** | 21.5s |
+
+**Melhoria vs v1**: 7.3 → 12.7 req/s (+75%), e **0% erro mesmo a 100 concurrent** (antes 6 req/s + latência 25s).
+
+### Cenário B — Com health (Chrome bridge) no mix
+| Chamadas | Concurr. | OK | Erros % | Nota |
+|---|---|---|---|---|
+| 120 | 40 | 101 | **15.8%** | health (youtube whoami via Chrome) satura |
+| 40 | 40 | 30 | **25%** | timeouts 60s no health |
+
+**Conclusão**: o gargalo é o **Chrome bridge** (1 sessão única), NÃO o MCP nem as APIs. O health faz `opencli youtube whoami` que usa o bridge — satura com >10 processos concorrentes.
+
+### Impacto do cache TTL
+- `finance_crypto` 1.5s → **0.37s** (HTTP direto, elimina spawn opencli)
+- `finance_defi` 0.6s → **0.25s**
+- Chamadas repetidas dentro de 60s: **1ms** (cache hit, sem spawn)
+
+### Recomendações de escala
+1. **Uso real** (ARES/agentes: <5 req/min) — folga enorme, irrelevante
+2. **Health/Chrome tools** em produção: NUNCA em concorrência alta; o bridge é 1 sessão
+3. **Para >15 req/s**: adicionar 2º profile Chrome (multi-context) OU cache antecipado (refresh em background)

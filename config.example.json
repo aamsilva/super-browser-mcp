@@ -1,7 +1,16 @@
 {
   "opencli": {
     "bin": "/opt/homebrew/bin/opencli",
-    "windowAdapters": ["barchart", "twitter", "youtube", "bloomberg", "web", "google", "reddit", "instagram", "facebook"]
+    "windowAdapters": [
+      "barchart",
+      "twitter",
+      "youtube",
+      "bloomberg",
+      "google",
+      "reddit",
+      "instagram",
+      "facebook"
+    ]
   },
   "cloak": {
     "python": "/Volumes/disco1tb/tools/scraping/.venv/bin/python3",
@@ -21,15 +30,38 @@
   },
   "ui": {
     "toolExamples": {
-      "finance_quote": {"symbol": "NVDA"},
-      "finance_options": {"symbol": "AAPL"},
-      "finance_crypto": {"pair": "BTCUSDT"},
-      "finance_defi": {"limit": 3},
-      "social_sentiment": {"query": "NVDA OR NVIDIA", "limit": 3},
-      "browser_browse": {"url": "https://news.ycombinator.com"},
-      "browser_act": {"action": "open", "args": {"url": "https://news.ycombinator.com"}},
-      "web_search": {"query": "MCP server", "limit": 3},
-      "scrape_stealth": {"url": "https://expresso.pt"},
+      "finance_quote": {
+        "symbol": "NVDA"
+      },
+      "finance_options": {
+        "symbol": "AAPL"
+      },
+      "finance_crypto": {
+        "pair": "BTCUSDT"
+      },
+      "finance_defi": {
+        "limit": 3
+      },
+      "social_sentiment": {
+        "query": "NVDA OR NVIDIA",
+        "limit": 3
+      },
+      "browser_browse": {
+        "url": "https://news.ycombinator.com"
+      },
+      "browser_act": {
+        "action": "open",
+        "args": {
+          "url": "https://news.ycombinator.com"
+        }
+      },
+      "web_search": {
+        "query": "MCP server",
+        "limit": 3
+      },
+      "scrape_stealth": {
+        "url": "https://expresso.pt"
+      },
       "health": {}
     }
   }
