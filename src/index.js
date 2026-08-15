@@ -267,6 +267,8 @@ function browserExec(action, args, session, windowMode) {
   const cmd = [action];
   for (const [k, v] of Object.entries(args || {})) {
     if (v === undefined || v === null || v === "") continue;
+    // tab: sub-comando posicional (tab new <url>, tab list, tab close <targetId>)
+    if (action === "tab" && (k === "action" || k === "url")) { cmd.push(String(v)); continue; }
     if (POS_ARGS.has(k)) cmd.push(String(v));
     else cmd.push("--" + k, String(v));
   }
