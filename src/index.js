@@ -63,23 +63,35 @@ const CFG = loadConfig();
  *  Resiliência: se o adapter rejeitar --window (ex: google news usa API,
  *  google search usa browser — inconsistente dentro do mesmo adapter),
  *  faz retry sem o flag. stdio ignore: o opencli não herda o stdin do MCP. */
-function oc(args, { timeout = CFG.timeoutMs } = {}) {
+function oc(args, { timeout = CFG.timeoutMs, retries = 2 } = {}) {
   const withWindow = CFG.windowAdapters.has(args[0]);
   const attempt = (win) => execFileSync(CFG.opencliBin, win ? [...args, "--window", "background", "--format", "json"]
                                                            : [...args, "--format", "json"], {
     timeout, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
   });
-  try {
-    const out = attempt(withWindow);
-    return JSON.parse(out);
-  } catch (e) {
-    // se falhou com --window e o adapter está na whitelist → retry sem flag
-    if (withWindow && !/unknown option '--window'/.test((e.stdout || e.message || "").toString())) {
-      try { return JSON.parse(attempt(true)); } catch { /* fallthrough */ }
-    }
-    try { return JSON.parse(attempt(false)); } catch {
+  // RETRY UNIVERSAL (melhoria #1, 15-Ago 23:50): connection closed/ETIMEDOUT/ECONNRESET
+  // são transitórios do bridge Chrome — retry 2x antes de falhar. Aplica a TODAS as
+  // tools que usam oc() (antes só social_sentiment tinha retry dedicado).
+  const TRANSIENT = /connection closed|ETIMEDOUT|ECONNRESET|spawnSync.*ETIMEDOUT|socket hang up|ENOTFOUND/i;
+  for (let attemptNum = 0; ; attemptNum++) {
+    try {
+      const out = attempt(withWindow);
+      return JSON.parse(out);
+    } catch (e) {
       const msg = (e.stdout || e.message || "").toString().trim();
-      try { return JSON.parse(msg); } catch { return { ok: false, error: msg.slice(0, 300) }; }
+      if (attemptNum >= retries || !TRANSIENT.test(msg)) {
+        // se falhou com --window e o adapter está na whitelist → retry sem flag
+        if (withWindow && !/unknown option '--window'/.test(msg)) {
+          try { return JSON.parse(attempt(true)); } catch { /* fallthrough */ }
+        }
+        try { return JSON.parse(attempt(false)); } catch {
+          try { return JSON.parse(msg); } catch { return { ok: false, error: msg.slice(0, 300) }; }
+        }
+      }
+      // transient → retry (pequena pausa para o bridge recuperar)
+      const delay = attemptNum + 1;
+      const start = Date.now();
+      while (Date.now() - start < delay * 500) { /* busy-wait curto */ }
     }
   }
 }
@@ -181,21 +193,24 @@ server.tool("site_search", "Pesquisa num site específico via opencli (adapter).
   });
 
 // ---- Finance / Trading (subskill trading-search) ----
-server.tool("finance_quote", "Cotações e dados de ações (barchart).",
-  { symbol: z.string().describe("Ticker (ex: NVDA)") },
+server.tool("finance_quote", "Cotações e dados de ações (barchart). Suporta BATCH: symbols separados por vírgula (ex: NVDA,AAPL,MSFT) — devolve array.",
+  { symbol: z.string().describe("Ticker(s) separados por vírgula (ex: NVDA ou NVDA,AAPL,MSFT)") },
   async ({ symbol }) => {
-    // cache TTL 60s: o barchart via opencli é lento (~2-9s); cache elimina o spawn
-    const d = await cachedOc(`quote:${symbol}`, ["barchart", "quote", symbol]);
+    const symbols = symbol.split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
+    if (symbols.length === 0) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "sem símbolos" }) }] };
+    // cache TTL 60s: o barchart via opencli é lento (~2-9s); cache elimina o spawn.
+    // BATCH (melhoria #3 15-Ago): 1 spawn por symbol (paralelo), cache partilhada.
+    const results = await Promise.all(symbols.map(sym => cachedOc(`quote:${sym}`, ["barchart", "quote", sym])));
+    const all = results.flatMap(d => (Array.isArray(d) ? d : [d]));
     // P1 fix (feedback T1 15-Ago): o adapter barchart devolve marketCap em MILHARES
     // (NVDA 5,448,872,320 = $5.4T). Normalizar ×1000 → dólares, em todas as posições.
-    const items = Array.isArray(d) ? d : [d];
-    for (const it of items) {
-      if (it && typeof it.marketCap === "string" || typeof it.marketCap === "number") {
+    for (const it of all) {
+      if (it && (typeof it.marketCap === "string" || typeof it.marketCap === "number")) {
         const n = Number(String(it.marketCap).replace(/,/g, ""));
         if (Number.isFinite(n) && n > 0) it.marketCap = n * 1000;
       }
     }
-    return { content: [{ type: "text", text: JSON.stringify(items.length === 1 && Array.isArray(d) ? items : items[0]) }] };
+    return { content: [{ type: "text", text: JSON.stringify(symbols.length === 1 ? all[0] : all) }] };
   });
 
 server.tool("finance_options", "Cadeia de opções + greeks + IV (barchart).",
@@ -328,6 +343,8 @@ function browserExec(action, args, session, windowMode) {
     // tab: sub-comando posicional (tab new <url>, tab list, tab close <targetId>)
     if (action === "tab" && (k === "action" || k === "url")) { cmd.push(String(v)); continue; }
     if (POS_ARGS.has(k)) cmd.push(String(v));
+    else if (v === true) cmd.push("--" + k);                 // flags booleanas: --all, --failed
+    else if (v === false || v === 0) continue;               // false/0 → omitir
     else cmd.push("--" + k, String(v));
   }
   const flags = ["browser", session, ...cmd];
