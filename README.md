@@ -57,6 +57,18 @@ Cobre sites onde o opencli **não** tem sessão (sessões vivem em `~/.agent-bro
 - **booking1**, **polymarket**, **default**
 
 Uso: `browser_agent {action:"open", url, session:"amazon"}` → `{action:"snapshot"}` → extrai conteúdo.
+**Sempre** terminar com `{action:"close"}` (evita órfãos PPID=1 — risco recorrente, ver recalls 09/10-Ago).
+
+### Qual browser usar (decisão — não duplicar)
+
+| Site/use case | Tool |
+|---|---|
+| Sessão no Chrome bridge (youtube, x/twitter, google, github, reddit, gemini, notebooklm) | `browser_act` |
+| Sessão no agent-browser (amazon, booking1, polymarket) | `browser_agent` |
+| Ler conteúdo/Cloudflare sem sessão | `scrape_stealth` (leitura) ou `browser_act {window:foreground}` (auth manual) |
+| Dúvida | `health`/`auth_check` primeiro — depois decidir |
+
+Regra: **um browser por tarefa**. Não usar browser_act E browser_agent na mesma tarefa (stacks de sessão diferentes).
 
 ### Auth fiável (quem validar sessão)
 

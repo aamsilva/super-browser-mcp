@@ -299,8 +299,8 @@ function agentExec(args, { timeout = CFG.timeoutMs } = {}) {
   });
   return out;
 }
-server.tool("browser_agent", "Automação browser via agent-browser (headless, sessões próprias). Cobre sites onde o opencli NÃO tem sessão (ex: amazon, booking, polymarket — sessões em ~/.agent-browser/<nome>). Ações: open (abrir URL com sessão), snapshot (ver estado da página), fill/type (preencher), click, press (teclas), scroll. STATE-FUL por sessão: usar session=<nome> (ex: amazon) para reutilizar cookies persistidos.",
-  { action: z.string().describe("Ação: open | snapshot | fill | type | click | press | scroll"), url: z.string().optional().describe("URL (para action:open)"), selector: z.string().optional().describe("Seletor CSS ou @ref (para click/fill/type)"), text: z.string().optional().describe("Texto (para fill/type)"), key: z.string().optional().describe("Tecla (para press, ex: Enter)"), session: z.string().optional().describe("Sessão agent-browser (ex: amazon, booking1, polymarket, default)") },
+server.tool("browser_agent", "Automação browser via agent-browser (headless, sessões próprias). Cobre sites onde o opencli NÃO tem sessão (ex: amazon, booking, polymarket — sessões em ~/.agent-browser/<nome>). Ações: open (abrir URL com sessão), snapshot (ver estado da página), fill/type (preencher), click, press (teclas), scroll, close (fechar sessão — SEMPRE usar após open para não deixar órfãos PPID=1). STATE-FUL por sessão: usar session=<nome> (ex: amazon) para reutilizar cookies persistidos.",
+  { action: z.string().describe("Ação: open | snapshot | fill | type | click | press | scroll | close"), url: z.string().optional().describe("URL (para action:open)"), selector: z.string().optional().describe("Seletor CSS ou @ref (para click/fill/type)"), text: z.string().optional().describe("Texto (para fill/type)"), key: z.string().optional().describe("Tecla (para press, ex: Enter)"), session: z.string().optional().describe("Sessão agent-browser (ex: amazon, booking1, polymarket, default)") },
   async ({ action, url, selector, text, key, session = "default" }) => {
     try {
       let out;
@@ -318,8 +318,10 @@ server.tool("browser_agent", "Automação browser via agent-browser (headless, s
         out = agentExec(["press", key, "--session-name", session]);
       } else if (action === "scroll") {
         out = agentExec(["scroll", text || "down", "--session-name", session]);
+      } else if (action === "close") {
+        out = agentExec(["close", "--session-name", session]);
       } else {
-        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: `Ação inválida: ${action}. Disponíveis: open, snapshot, fill, type, click, press, scroll` }) }] };
+        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: `Ação inválida: ${action}. Disponíveis: open, snapshot, fill, type, click, press, scroll, close` }) }] };
       }
       return { content: [{ type: "text", text: JSON.stringify({ ok: true, output: out.slice(0, 20000) }) }] };
     } catch (e) {
