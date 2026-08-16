@@ -18,9 +18,6 @@
     "maxHtmlBytes": 2000000,
     "timeoutMs": 90000
   },
-  "searxng": {
-    "url": "http://localhost:8081"
-  },
   "browser": {
     "defaultSession": "mcp-main",
     "maxTabs": 30,
