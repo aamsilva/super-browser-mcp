@@ -8,3 +8,5 @@ config.json
 *.db-wal
 *.db-shm
 __pycache__/
+web-articles/
+capabilities_state.db*
