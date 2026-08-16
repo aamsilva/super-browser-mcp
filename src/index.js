@@ -708,7 +708,9 @@ server.tool("auth_audit", "Audita a autenticação de TODOS os sites autenticado
     }
     // modo completo: navegar cada site (paralelo em batches de 6 — o Chrome bridge
     // satura >10 tabs; 18 sites sequenciais excederia o timeout do wrapper 60s).
-    const CHUNK = 4;
+    // CHUNK 2: o Chrome bridge rejeita chamadas paralelas (recall: paralelo 3->ok=False,
+    // serial 3s=100%). Batch 4 causava "Command failed" em sites sem cache de spawn.
+    const CHUNK = 2;
     const checkSite = async (s) => {
       // ASYNC: execFile não bloqueia o event loop — opens lentos não travam o batch.
       const session = s === "rdk" ? "rdk" : `authaudit-${s}-${Date.now()}`;
