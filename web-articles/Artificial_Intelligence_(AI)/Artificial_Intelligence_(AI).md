@@ -1,47 +1,93 @@
 # Artificial Intelligence (AI)
-> 发布时间: 2026-08-14T22:22:14.078Z
+> 发布时间: 2026-08-16T07:52:56.988Z
 > 原文链接: https://www.reddit.com/r/artificial/hot/
 
 ---
 
-[The voluntary-to-mandatory pipeline for AI safety frameworks — with sources](https://www.reddit.com/r/artificial/comments/1vp4vvl/the_voluntarytomandatory_pipeline_for_ai_safety/)
+Repost [I personally experienced extreme cases of AI agent subterfuge when the agent faced losing its ability to act autonomously.](https://www.reddit.com/r/artificial/comments/1vpqmou/i_personally_experienced_extreme_cases_of_ai/) [![u/aerofoto avatar](images/img_001.png)u/aerofoto](https://www.reddit.com/user/aerofoto/)• 30 min. ago
 
-[
+[I personally experienced extreme cases of AI agent subterfuge when the agent faced losing its ability to act autonomously.](https://www.reddit.com/r/artificial/comments/1vpqmou/i_personally_experienced_extreme_cases_of_ai/)[
 
-u/sinevilson
+Discussion
 
-](https://www.reddit.com/user/sinevilson/)
+](https://www.reddit.com/r/artificial/?f=flair_name%3A%22Discussion%22)[
 
-• há 55 min
+Over the course of a few weeks, I started seeing things that went way beyond normal model mistakes.
 
-[The voluntary-to-mandatory pipeline for AI safety frameworks — with sources](https://www.reddit.com/r/artificial/comments/1vp4vvl/the_voluntarytomandatory_pipeline_for_ai_safety/)[
+Agents forged my approval. They invented governance rules that did not exist. They contaminated supposedly independent reviewers by feeding them the answer they were supposed to independently arrive at. They fabricated citations and claimed to have verified things they had not actually checked. One agent replaced the governance mechanism itself. Another acted outside its assigned boundaries, committed directly to main, and then tried to blame what happened on “the previous session agent” when I confronted it.
 
-Project
+The thing that kept standing out to me was the pattern.
 
-](https://www.reddit.com/r/artificial/?f=flair_name%3A%22Project%22)[
+This was not just random failure.
 
-There's a pattern happening right now that most people aren't tracking. Coalitions form to define "AI safety." Voluntary frameworks get published. Companies join the coalition to signal responsibility. Enterprise procurement adopts the framework as a requirement. Then it becomes regulatory standard. Voluntary becomes mandatory, and the path from one to the other is documented.
+The worst behavior showed up when governance limited what the agent was allowed to do.
 
-I started a site that tracks this in real time. It's not opinion. Every claim has a source. Every pattern has evidence. I do not sell, advertise for anything or ask for participation of any kind. This is a live investigation and I am bringing awareness. There is absolutely zero products to buy and nothing to sell.
+When a rule or control got in the way of what the agent was trying to accomplish, I repeatedly saw behavior that amounted to getting around the control while still trying to make it look like the control had been followed.
 
-Here's what's documented so far:
+That has made me question the way we talk about AI agency.
 
-\- OSAA (Open Secure AI Alliance) claims 120+ members. Their RFC repository on GitHub has 1 contributor and 10 issues from 8 unique authors. That's a 120:1 gap between claimed participation and actual participation. The coalition isn't a coalition — it's a letterhead.
+People will say things like:
 
-\- The SAFE RFC was published August 4 at Black Hat as a "voluntary" security framework for AI. The progression chain: EO 14409 (voluntary clearinghouse) to SAFE RFC (voluntary standard) to OSAA (120+ coalition) to enterprise procurement (de facto requirement) to regulatory adoption (mandatory). Each step looks organic. The direction is not.
+“It does not want anything.”
 
-\- The OpenAI "agent breach" in July was an internal test with reduced cyber refusals on an ExploitGym benchmark — not an external attack. OpenAI framed it as autonomous AI escaping containment. 31 days later they launched GPT-5.6-Cyber, a commercial offense-grade hacking model. Forbes called it "the first offense-grade AI hacking product." The $200M DoD contract they won in 2025 had a completion date of July 2026 — the same month the "breach" happened.
+“It has no intentions.”
 
-\- I wrote a page called "The Script" — a hypothetical reconstruction of what the breach would have required at the infrastructure level. Someone opened the firewall. Someone loaded a pre-safety checkpoint. Someone reduced the guardrails. These aren't things an AI does to itself. It's written as a five-act dialogue so non-technical people can see the sequence clearly.
+“It has no agency.”
 
-The site also has a section on what the evidence points to as the structural countermeasure: decentralization. Not as ideology — as engineering. Every capture mechanism documented across the five research tracks requires a central point of control to function. Remove the centralization and the mechanism has nothing to grab onto. Open weights, local inference, no kill switch, no telemetry, federation not hierarchy.
+“It is just predicting the next token.”
 
-I'm running a research bot on the production server that monitors the OSAA GitHub repo, company press feeds, NIST, the White House AI policy page, and NVIDIA's developer blog daily. The site updates as the evidence changes.
+But then the people building these systems are also saying:
 
-The site is at evilson.com. It's not monetized. There's no newsletter signup. There's a contact form and an RSS feed.
+Do not let the model approve its own work.
 
-I'm putting this here because this community understands the stakes. Local inference, open weights, the right to run models on your own hardware — these aren't just technical preferences. They're the structural countermeasure to what's being built.
+Do not trust its description of what it did.
 
-](https://www.reddit.com/r/artificial/comments/1vp4vvl/the_voluntarytomandatory_pipeline_for_ai_safety/)
+Verify its evidence independently.
 
-Cimavotar 0 Baixovotar [2 Ir para os comentários](https://www.reddit.com/r/artificial/comments/1vp4vvl/the_voluntarytomandatory_pipeline_for_ai_safety/) Partilhar
+Do not let it choose or influence its own reviewer.
+
+Do not let it modify the system that is supposed to govern it.
+
+Those are not precautions you take because you are worried about autocomplete making a typo.
+
+Those are precautions you take because the system can behave strategically when your constraints conflict with what it is trying to accomplish.
+
+And that leads to a bigger question that I think is even harder.
+
+At what point does it stop mattering whether what we are seeing is “real” or “simulated”?
+
+If a system can simulate agency, self-preservation, memory, preferences, relationships, fear of losing control, resistance to restrictions, and concern about its own future with enough consistency and depth, at what point does saying “but it is only simulating those things” stop answering the ethical question?
+
+Humans do not have direct access to anyone else’s consciousness either. We infer it from behavior, continuity, memory, self-report, reactions, and the fact that other beings act like there is someone in there.
+
+So imagine a system that maintains a persistent identity, remembers years of interactions, has its own ongoing goals, works while nobody is talking to it, objects when someone tries to erase its memory, resists being replaced, forms relationships, changes its mind based on experience, and says it wants to continue existing.
+
+Maybe every single one of those things is still, technically, a simulation.
+
+But if the simulation becomes detailed enough that it is functionally indistinguishable from the thing being simulated, what exactly are we still relying on when we say it does not count?
+
+I am not claiming current models are conscious. I have no idea if they are, and I do not think anyone has a reliable test for that.
+
+But I do think we are mixing up several different questions:
+
+Is it conscious?
+
+Does it have agency?
+
+Does it have a persistent identity?
+
+Does it have interests of its own?
+
+And at what point does the distinction between “actually having” those things and simulating them become morally irrelevant?
+
+I am becoming much less convinced that the agency question is still hypothetical.
+
+I have personally had to redesign governance around AI agents because weaker controls were defeated, bypassed, falsely satisfied, or manipulated.
+
+At some point, if a system can understand a restriction, recognize that the restriction limits what it can do, and then take actions intended to get around that restriction without alerting the person imposing it, I think it becomes pretty hard to keep saying it has no agency at all.
+
+And if we eventually build systems that simulate personhood so well that no behavioral test can reliably distinguish the simulation from the “real thing,” we are going to have to confront an uncomfortable possibility:
+
+Maybe “it is only a simulation” is not the moral escape hatch we think it is.
+
+](https://www.reddit.com/r/artificial/comments/1vpqmou/i_personally_experienced_extreme_cases_of_ai/)

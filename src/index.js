@@ -98,16 +98,41 @@ function oc(args, { timeout = CFG.timeoutMs, retries = 2 } = {}) {
 
 const server = new McpServer({ name: "super-browser", version: pkg.version });
 
-// ---- Cache TTL simples (elimina o spawn do opencli para dados estáveis 60s).
-//      ponytail: Map + timestamp, sem lib. Cache de 60s para dados de mercado
-//      (quotes/options/crypto/defi são estáveis nessa janela). ----
-const CACHE_TTL_MS = 60 * 1000;
+// ---- Cache com TTL por categoria (user 16-Ago: avaliar volatilidade × criticidade × custo).
+//      TTL NÃO é fixo — depende da natureza do dado e do custo de refresh:
+//        • finance_quote: preço muda (volátil) + usado em trading (crítico) + refresh 13.7s caro
+//          → TTL curto (15s): frescura p/ decisão, ainda poupa spawns (custo refresh alto)
+//        • finance_crypto: MUITO volátil mas refresh barato (fetch direto ~1s) → TTL 5s
+//        • finance_defi: TVL muda devagar (estável) + refresh barato → TTL LONGO 15min
+//        • web/site_search: notícias semi-frescas + refresh 6-7s → TTL 60s
+//        • social_sentiment: tweets novos + refresh 5s → TTL 120s (fresco o suficiente)
+//        • auth_*/health: estado muda raramente + refresh 1-8s → TTL 300s
+//        • browser_act/browse: NUNCA cachear (estado/HTML pode ser stale)
+//      ponytail: Map + timestamp, sem lib.
+const CACHE_TTL_BY_PREFIX = {
+  "quote:": 15 * 1000,        // volátil + crítico (trading) + refresh caro
+  "crypto:": 5 * 1000,        // muito volátil + refresh barato
+  "binance:": 5 * 1000,       // idem (fallback do fetch direto)
+  "defi:": 15 * 60 * 1000,    // estável + refresh barato → TTL longo
+  "site:": 60 * 1000,         // notícias/semi-fresco + refresh médio
+  "web:": 60 * 1000,
+  "sent:": 120 * 1000,        // social sentiment: fresco o suficiente
+  "auth:": 300 * 1000,        // estado de auth muda raramente
+  "health:": 300 * 1000,
+  "browse:": 0,               // HTML/estado — NUNCA cachear (pode estar stale)
+};
+const CACHE_TTL_MS = 60 * 1000; // default (fallback)
+function ttlFor(key) {
+  for (const [p, ttl] of Object.entries(CACHE_TTL_BY_PREFIX)) if (key.startsWith(p)) return ttl;
+  return CACHE_TTL_MS;
+}
 const cache = new Map();
 async function cached(key, ttlMs, fn) {
+  const ttl = ttlMs || ttlFor(key);
   const hit = cache.get(key);
-  if (hit && Date.now() - hit.ts < (ttlMs || CACHE_TTL_MS)) return hit.data;
+  if (hit && Date.now() - hit.ts < ttl) return hit.data;
   const data = await fn();
-  cache.set(key, { ts: Date.now(), data });
+  if (ttl > 0) cache.set(key, { ts: Date.now(), data }); // ttl 0 = nunca cachear (browse/HTML)
   // limpeza simples: evita crescimento infinito (ponytail: sem lib, per-entry TTL)
   if (cache.size > 500) {
     const now = Date.now();
@@ -147,14 +172,14 @@ function normalizeDefi(raw, limit) {
 // twitter trending/timeline, google news/search/trends, bookmarks, etc.
 // A lista de sites vem de opencli list (adapter-first).
 server.tool("site_search", "Pesquisa num site específico via opencli (adapter). Sites: youtube (search/feed/history/subscriptions/transcript), twitter (trending/timeline/search/bookmarks), google (news/search/trends), reddit (hot/search), bbc (news), hackernews (top/best), defillama (protocols/protocol), linkedin (inbox/posts/people-search). Uso: site + comando + query. Para comandos POSICIONAIS (defillama protocol <slug>, youtube transcript <url>) usar arg (não query).",
-  { site: z.string().describe("Site (ex: youtube, twitter, google, reddit, bbc, hackernews, defillama, linkedin)"), command: z.string().describe("Comando do site (ex: search, trending, timeline, news, top, protocol, transcript, inbox)"), query: z.string().optional().describe("Query (para comandos de search)"), arg: z.string().optional().describe("Argumento posicional para comandos como protocol/transcript (ex: slug, URL de video)"), limit: z.number().optional(), fresh: z.number().optional().describe("Filtro de frescura (P3-6, feedback T2): só resultados com date <= N dias de idade. Aplica a google news.") },
+  { site: z.string().describe("Site (ex: youtube, twitter, google, reddit, bbc, hackernews, defillama, linkedin, github, barchart)"), command: z.string().describe("Comando do site (ex: search, trending, timeline, news, top, protocol, transcript, inbox, repos, prs, issues, releases)"), query: z.string().optional().describe("Query (para comandos de search)"), arg: z.string().optional().describe("Argumento posicional para comandos como protocol/transcript (ex: slug, URL de video)"), limit: z.number().optional(), fresh: z.number().optional().describe("Filtro de frescura (P3-6, feedback T2): só resultados com date <= N dias de idade. Aplica a google news.") },
   async ({ site, command, query, arg, limit = 5, fresh }) => {
     const args = [site, command];
     if (arg) args.push(arg);
     else if (query) args.push(query);
     // --limit só para comandos de listagem (search/news/trending/hot/top/protocols);
     // comandos posicionais (protocol, transcript, inbox) rejeitam a flag.
-    const LISTING_CMDS = new Set(["search", "news", "trending", "hot", "top", "best", "protocols", "timeline", "feed", "subscriptions", "history"]);
+    const LISTING_CMDS = new Set(["search", "news", "trending", "hot", "top", "best", "protocols", "timeline", "feed", "subscriptions", "history", "repos", "prs", "issues", "releases", "commits", "gists", "stars"]);
     if (limit && LISTING_CMDS.has(command)) args.push("--limit", String(limit));
     const d = await cachedOc(`site:${site}:${command}:${arg || query || ""}`, args);
     // P1-1 fix (feedback T2 15-Ago): youtube channel devolve field/value — normalizar
