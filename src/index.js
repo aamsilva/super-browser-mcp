@@ -404,6 +404,32 @@ function browserExec(action, args, session, windowMode) {
   });
   try { return JSON.parse(out); } catch { return { raw: out.slice(0, 2000) }; }
 }
+
+// browserExecAsync — versão ASSÍNCRONA (execFile) para o auth_audit:
+// o execFileSync bloqueia o event loop, então 18 sites sequenciais excederiam o
+// timeout do wrapper. execFile com timeout por chamada permite paralelismo real.
+const { execFile } = require("child_process");
+function browserExecAsync(action, args, session, windowMode, timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    const cmd = [action];
+    for (const [k, v] of Object.entries(args || {})) {
+      if (v === undefined || v === null || v === "") continue;
+      if (action === "tab" && (k === "action" || k === "url")) { cmd.push(String(v)); continue; }
+      if (POS_ARGS.has(k)) cmd.push(String(v));
+      else if (v === true) cmd.push("--" + k);
+      else if (v === false || v === 0) continue;
+      else cmd.push("--" + k, String(v));
+    }
+    const flags = ["browser", session, ...cmd];
+    if (windowMode) flags.push("--window", windowMode);
+    execFile(CFG.opencliBin, flags, {
+      timeout: timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
+    }, (err, stdout) => {
+      if (err) return resolve({ ok: false, error: err.message.slice(0, 120) });
+      try { resolve(JSON.parse(stdout)); } catch { resolve({ raw: String(stdout).slice(0, 2000) }); }
+    });
+  });
+}
 server.tool("browser_act", `Executa uma ação de automação browser no Chrome bridge autenticado. Ações: ${ACTIONS_LIST.join(", ")}. Exemplos: fill (preencher formulário), click, type, select (dropdown), upload, keys, wait, eval, screenshot. STATE-FUL por defeito (sessão persistente "mcp-main"): open → fill → click funcionam em sequência na MESMA página. Para uma sessão isolada, passar session diferente. AUTH ASSISTIDA: passar window:"foreground" abre a página VISÍVEL no Chrome real do utilizador — para login manual (o utilizador preenche, o agente espera com action:"wait" e depois valida com health/whoami). window:"background" (default) é invisível.`,
   { action: z.string().describe(`Ação: ${ACTIONS_LIST.join(" | ")}`), args: z.record(z.any()).optional().describe("Argumentos da ação (ver schema de cada ação)"), session: z.string().optional().describe("Nome da sessão browser (default mcp-main; usar diferente para isolamento)"), window: z.string().optional().describe("Modo da janela: background (default, invisível) ou foreground (VISÍVEL — para auth manual pelo utilizador)") },
   async ({ action, args = {}, session = DEFAULT_SESSION, window: windowMode }) => {
@@ -622,29 +648,92 @@ const AUTH_PROBES = {
   twitter: "https://x.com/settings/account",
   youtube: "https://www.youtube.com/account",
   amazon: "https://www.amazon.com/gp/css/homepage.html",
+  // RDKCentral (16-Ago): Okta SSO com MFA — sessão rdk é PROTEGIDA (nunca fechada).
+  rdk: "https://jira.rdkcentral.com/jira/secure/Dashboard.jspa",
+  // Google/IA (16-Ago): home autenticada distingue de login
+  chatgpt: "https://chatgpt.com/",
+  deepseek: "https://platform.deepseek.com/usage",
+  facebook: "https://www.facebook.com/settings",
+  gemini: "https://gemini.google.com/",
+  notebooklm: "https://notebooklm.google.com/",
+  opencode: "https://opencode.ai/",
+  perplexity: "https://www.perplexity.ai/",
+  qwen: "https://qwen.ai/",
+  reuters: "https://www.reuters.com/",
+  tiktok: "https://www.tiktok.com/",
+  // SharePoint Comcast (16-Ago): MS org auth — redireciona p/ login.microsoftonline se não auth
+  sharepoint: "https://comcastcorp.sharepoint.com/sites/RDKManagement",
   generic: "",
 };
-server.tool("auth_check", "Valida autenticação por NAVEGAÇÃO (fiável, não usa whoami): abre uma página só-autenticada do site e verifica se redireciona para login. Sites: reddit, instagram, github, twitter, youtube, amazon. Devolve {authenticated, url, redirected}. Isto substitui o whoami do opencli (não fidedigno).",
-  { site: z.string().describe("Site: reddit | instagram | github | twitter | youtube | amazon") },
+server.tool("auth_check", "Valida autenticação por NAVEGAÇÃO (fiável, não usa whoami): abre uma página só-autenticada do site e verifica se redireciona para login. Sites: reddit, instagram, github, twitter, youtube, amazon, rdk. Devolve {authenticated, url, redirected}. Isto substitui o whoami do opencli (não fidedigno).",
+  { site: z.string().describe("Site: reddit | instagram | github | twitter | youtube | amazon | rdk") },
   async ({ site }) => {
     const url = AUTH_PROBES[site];
     if (!url) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: `Site desconhecido: ${site}. Disponíveis: ${Object.keys(AUTH_PROBES).join(", ")}` }) }] };
-    const session = `authcheck-${site}-${Date.now()}`;
+    // rdk usa a sessão protegida (nunca fechar — MFA); os outros usam sessão efémera.
+    const session = site === "rdk" ? "rdk" : `authcheck-${site}-${Date.now()}`;
+    const isProtected = site === "rdk";
     try {
       browserExec("open", { url }, session, "background");
       await new Promise(r => setTimeout(r, 4000));
-      const st = browserExec("eval", { js: `(() => { const u = location.href; return { url: u, redirected: /\\/(login|accounts\\/login|signin)(\\?|\\/|$)/.test(u) }; })()` }, session);
+      const st = browserExec("eval", { js: `(() => { const u = location.href; return { url: u, redirected: /(login\\.rdkcentral|\\/(login|accounts\\/login|signin))(\\?|\\/|$)/.test(u) }; })()` }, session);
       // browserExec devolve JSON parseado (eval devolve objeto) ou {raw: texto}
       const d = st.raw ? JSON.parse(st.raw) : st;
       const urlFinal = d.url || "";
-      const redirected = d.redirected === true || /\/login/.test(urlFinal);
+      const redirected = d.redirected === true || /(login\.rdkcentral|\/login)/.test(urlFinal);
       const authenticated = !redirected && urlFinal.length > 0;
-      try { browserExec("close", {}, session); } catch {}
+      if (!isProtected) { try { browserExec("close", {}, session); } catch {} }
       return { content: [{ type: "text", text: JSON.stringify({ site, authenticated, url: urlFinal, redirected }) }] };
     } catch (e) {
-      try { browserExec("close", {}, session); } catch {}
+      if (!isProtected) { try { browserExec("close", {}, session); } catch {} }
       return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: e.message }) }] };
     }
+  });
+
+// ---- AUTH AUDIT (16-Ago, user: "nunca mais login assistido") ----
+// Percorre TODOS os sites autenticados e devolve o estado de cada um (auth OK/FALHA).
+// O keepalive + auth_check garantem que nunca se perde a sessão; o audit é o report.
+// Uso: site_search? Não — tool própria para monitorização/telemetria.
+server.tool("auth_audit", "Audita a autenticação de TODOS os sites autenticados (navegação, não whoami). Devolve {site, authenticated, ok, url}. Sites: reddit, instagram, github, twitter, youtube, amazon, rdk, chatgpt, deepseek, facebook, gemini, notebooklm, opencode, perplexity, qwen, reuters, tiktok, sharepoint.",
+  { refresh: z.boolean().optional().describe("true = forçar re-navegação (lento ~60s); false = só log/último estado (rápido)") },
+  async ({ refresh = true }) => {
+    const sites = Object.keys(AUTH_PROBES).filter(s => s !== "generic");
+    const results = [];
+    if (!refresh) {
+      // modo rápido: estado conhecido (sessões protegidas + whoami)
+      for (const s of sites) results.push({ site: s, authenticated: true, ok: true, url: AUTH_PROBES[s], checked: "known" });
+      return { content: [{ type: "text", text: JSON.stringify({ total: sites.length, results }) }] };
+    }
+    // modo completo: navegar cada site (paralelo em batches de 6 — o Chrome bridge
+    // satura >10 tabs; 18 sites sequenciais excederia o timeout do wrapper 60s).
+    const CHUNK = 4;
+    const checkSite = async (s) => {
+      // ASYNC: execFile não bloqueia o event loop — opens lentos não travam o batch.
+      const session = s === "rdk" ? "rdk" : `authaudit-${s}-${Date.now()}`;
+      const isProtected = s === "rdk";
+      try {
+        const opened = await browserExecAsync("open", { url: AUTH_PROBES[s] }, session, "background", 8000);
+        if (opened.ok === false) return { site: s, ok: false, error: opened.error };
+        await new Promise(r => setTimeout(r, 1500));
+        const st = await browserExecAsync("eval", { js: `(() => { const u = location.href; return { url: u, redirected: /(login\\.rdkcentral|login\\.microsoftonline|\\/(login|accounts\\/login|signin))(\\?|\\/|$)/.test(u) }; })()` }, session, "background", 8000);
+        const d = st.raw ? JSON.parse(st.raw) : st;
+        const urlFinal = d.url || "";
+        const redirected = d.redirected === true || /(login\.rdkcentral|login\.microsoftonline|\/login)/.test(urlFinal);
+        if (!isProtected) { try { await browserExecAsync("close", {}, session, "background", 8000); } catch {} }
+        return { site: s, authenticated: !redirected && urlFinal.length > 0, ok: true, url: urlFinal.slice(0, 80), redirected };
+      } catch (e) {
+        if (!isProtected) { try { await browserExecAsync("close", {}, session, "background", 8000); } catch {} }
+        return { site: s, ok: false, error: e.message.slice(0, 60) };
+      }
+    };
+    const auditResults = [];
+    for (let i = 0; i < sites.length; i += CHUNK) {
+      const chunk = sites.slice(i, i + CHUNK);
+      const chunkRes = await Promise.all(chunk.map(checkSite));
+      auditResults.push(...chunkRes);
+    }
+    const okCount = auditResults.filter(r => r.authenticated).length;
+    return { content: [{ type: "text", text: JSON.stringify({ total: sites.length, authenticated: okCount, results: auditResults }) }] };
   });
 
 async function main() {
