@@ -262,8 +262,7 @@ pre{background:var(--surface);border:1px solid var(--border);border-radius:var(-
 <div id="st"></div>
 <h2>🧪 Testes manuais das tools</h2>
 <div class="tools" id="tools"></div>
-<h2>Telemetria</h2>
-<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+<h2>Telemetria</h2><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
   <label style="font-size:11px;color:var(--text3)">Últimas horas:</label>
   <select id="hoursSel" onchange="hist()" style="background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:var(--radius-sm);padding:6px 10px;font-size:12px;font-family:var(--font-mono)">
     <option value="1">1h</option><option value="3" selected>3h</option>
@@ -271,8 +270,17 @@ pre{background:var(--surface);border:1px solid var(--border);border-radius:var(-
   </select>
   <span id="histCount" style="font-size:11px;color:var(--text3)"></span>
 </div>
-<table class="hist" id="hist"></table>
-<div class="footer" id="footer"></div>
+ <table class="hist" id="hist"></table>
+ <h2>📈 Evolução de Performance</h2>
+ <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+   <label style="font-size:11px;color:var(--text3)">Janela:</label>
+   <select id="perfHours" onchange="loadPerf()" style="background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:var(--radius-sm);padding:6px 10px;font-size:12px;font-family:var(--font-mono)">
+     <option value="6">6h</option><option value="24" selected>24h</option><option value="72">72h</option>
+   </select>
+   <span id="perfSummary" style="font-size:11px;color:var(--text3)"></span>
+ </div>
+ <div id="perf" style="font-family:var(--font-mono);font-size:11px"></div>
+ <div class="footer" id="footer"></div>
 <script>
 async function snap(){try{const r=await fetch('/api/state');const s=await r.json();
 document.getElementById('st').innerHTML=`<div class="grid">
@@ -309,6 +317,28 @@ const hours=document.getElementById('hoursSel').value;
 const r=await fetch('/api/history?hours='+hours+'&limit=500');const rows=await r.json();
 document.getElementById('histCount').textContent=rows.length+' chamadas';
 document.getElementById('hist').innerHTML='<tr><th>Hora</th><th>Source</th><th>Caller</th><th>Tool</th><th>Resultado</th><th>Latência</th><th>Resumo</th><th></th></tr>'+rows.map(x=>`<tr style="cursor:pointer" onclick="detail(${x.id})"><td>${x.ts}</td><td>${x.source||'?'}</td><td>${x.caller||'?'}</td><td>${x.tool}</td><td class="${x.ok?'ok-tag':'fail-tag'}">${x.ok?'OK':'FAIL'}</td><td>${Math.round(x.latency_ms)}ms</td><td title="${(x.summary||'').replace(/"/g,'&quot;')}">${(x.summary||'').slice(0,50)}</td><td>🔎</td></tr>`).join('');}catch(e){}}
+async function loadPerf(){try{
+const hours=document.getElementById('perfHours').value;
+const r=await fetch('/api/perf?hours='+hours);const rows=await r.json();
+const byHour={};
+for(const x of rows){byHour[x.hour]=byHour[x.hour]||{calls:0,ok:0,lat:0,max:0,tools:{}};
+ byHour[x.hour].calls+=x.calls;byHour[x.hour].ok+=x.ok;
+ byHour[x.hour].lat+=x.avg_ms*x.calls;byHour[x.hour].max=Math.max(byHour[x.hour].max,x.max_ms);
+ byHour[x.hour].tools[x.tool]=(byHour[x.hour].tools[x.tool]||0)+x.calls;}
+const hoursArr=Object.keys(byHour).sort();
+const totalCalls=hoursArr.reduce((a,h)=>a+byHour[h].calls,0);
+const totalOk=hoursArr.reduce((a,h)=>a+byHour[h].ok,0);
+const maxLat=Math.max(...hoursArr.map(h=>byHour[h].max),1);
+const maxN=Math.max(...hoursArr.map(h=>byHour[h].calls),1);
+document.getElementById('perfSummary').textContent=`${totalCalls} chamadas | ${Math.round(totalOk/totalCalls*100)}% OK`;
+document.getElementById('perf').innerHTML='<div style="white-space:pre;line-height:1.3">'+hoursArr.map(h=>{
+ const d=byHour[h];const avg=Math.round(d.lat/Math.max(d.calls,1));
+ const barN='█'.repeat(Math.round(d.calls/maxN*24));
+ const barLat='▁'.repeat(Math.max(Math.round(d.max/maxLat*24),1));
+ const pct=Math.round(d.ok/d.calls*100);
+ const tools=Object.entries(d.tools).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([t,n])=>t+'×'+n).join(' ');
+ return `${h} | ${String(d.calls).padStart(3)}ch ${String(pct).padStart(3)}% ${String(avg).padStart(5)}ms max${String(d.max).padStart(6)}ms ${barN} ${barLat} | ${tools}`;
+}).join('\\n')+'</div>';}catch(e){document.getElementById('perf').textContent='erro: '+e.message;}}
 async function detail(id){try{
 const r=await fetch('/api/trace?hours=0');const rows=await r.json();const x=rows.find(y=>y.id===id);if(!x)return;
 document.getElementById('modal').style.display='flex';
@@ -317,7 +347,7 @@ document.getElementById('modal-body').textContent=
  'PARAMS:\\n'+(x.params||'(vazio)')+'\\n\\nRESULT:\\n'+(x.result||'(vazio)')+'\\n\\nSUMMARY:\\n'+(x.summary||'(vazio)')+'\\n\\nERROR:\\n'+(x.error||'(sem erro)');
 }catch(e){}}
 document.getElementById('footer').textContent='super-browser-mcp v1.0 · serve_capabilities.py · ' + new Date().toISOString().slice(0,10);
-snap();hist();setInterval(()=>{snap();hist();},15000);
+snap();hist();loadPerf();setInterval(()=>{snap();hist();loadPerf();},15000);
 </script>
 <div id="modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:999;align-items:center;justify-content:center">
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;width:90%;max-width:1000px;max-height:90vh;display:flex;flex-direction:column;overflow:hidden">
@@ -398,6 +428,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 sql += f" WHERE ts > {time.time() - hours * 3600}"
             sql += " ORDER BY id DESC LIMIT 2000"
             rows = [{"id": r[0], "ts": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r[1])), "tool": r[2], "ok": bool(r[3]), "latency_ms": round(r[4], 1), "error": r[5] or "", "caller": r[6] or "?", "method": r[7] or "?", "params": r[8] or "", "result": (r[9] or "")[:20000], "source": r[10] or "?", "result_type": r[11] or "?", "summary": r[12] or ""} for r in conn.execute(sql)]
+            self._json(rows)
+        elif u.path == "/api/perf":
+            # EVOLUÇÃO DE PERFORMANCE (user 16-Ago): agregação por hora —
+            # chamadas, % ok, latência média/p95, por tool. Para a webui ver a tendência.
+            q = urlparse(self.path).query
+            hours = 24
+            if q:
+                p = dict(x.split("=") for x in q.split("&") if "=" in x)
+                hours = min(72, max(1, int(p.get("hours", 24))))
+            rows = []
+            for r in conn.execute("""
+                SELECT strftime('%m-%d %H:00', ts, 'unixepoch', 'localtime') as hora,
+                       tool,
+                       COUNT(*) as n,
+                       SUM(CASE WHEN ok THEN 1 ELSE 0 END) as ok_n,
+                       ROUND(AVG(latency_ms), 0) as avg_ms,
+                       MAX(latency_ms) as max_ms
+                FROM calls
+                WHERE ts > ?
+                GROUP BY hora, tool
+                ORDER BY hora
+            """, (time.time() - hours * 3600,)):
+                n = r[2] or 0
+                rows.append({
+                    "hour": r[0], "tool": r[1], "calls": n, "ok": r[3] or 0,
+                    "ok_pct": round((r[3] or 0) / n * 100) if n else 100,
+                    "avg_ms": r[4] or 0, "max_ms": r[5] or 0,
+                })
             self._json(rows)
         else:
             self._json({"error": "not found"}, 404)
