@@ -64,31 +64,34 @@ const CFG = loadConfig();
  *  google search usa browser — inconsistente dentro do mesmo adapter),
  *  faz retry sem o flag. stdio ignore: o opencli não herda o stdin do MCP. */
 function oc(args, { timeout = CFG.timeoutMs, retries = 2 } = {}) {
+  // Comandos browser:false (youtube transcript/search/video, github repos/...) REJEITAM
+  // --window — só comandos de sites autenticados precisam dele. Estratégia: tentar com
+  // window; se "unknown option '--window'" → retry SEM window (16-Ago, bug: o retry
+  // sem flag nunca disparava porque a condição estava invertida).
   const withWindow = CFG.windowAdapters.has(args[0]);
   const attempt = (win) => execFileSync(CFG.opencliBin, win ? [...args, "--window", "background", "--format", "json"]
                                                            : [...args, "--format", "json"], {
     timeout, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
   });
-  // RETRY UNIVERSAL (melhoria #1, 15-Ago 23:50): connection closed/ETIMEDOUT/ECONNRESET
-  // são transitórios do bridge Chrome — retry 2x antes de falhar. Aplica a TODAS as
-  // tools que usam oc() (antes só social_sentiment tinha retry dedicado).
   const TRANSIENT = /connection closed|ETIMEDOUT|ECONNRESET|spawnSync.*ETIMEDOUT|socket hang up|ENOTFOUND/i;
   for (let attemptNum = 0; ; attemptNum++) {
     try {
-      const out = attempt(withWindow);
-      return JSON.parse(out);
+      return JSON.parse(attempt(withWindow));
     } catch (e) {
-      const msg = (e.stdout || e.message || "").toString().trim();
-      if (attemptNum >= retries || !TRANSIENT.test(msg)) {
-        // se falhou com --window e o adapter está na whitelist → retry sem flag
-        if (withWindow && !/unknown option '--window'/.test(msg)) {
-          try { return JSON.parse(attempt(true)); } catch { /* fallthrough */ }
+      const msg = (e.stdout || e.stderr || e.message || "").toString().trim();
+      // se falhou com --window e o comando rejeita a flag → retry SEM window
+      if (withWindow && /unknown option '--window'/.test(msg)) {
+        try { return JSON.parse(attempt(false)); } catch (e2) {
+          const msg2 = (e2.stdout || e2.stderr || e2.message || "").toString().trim();
+          try { return JSON.parse(msg2); } catch { return { ok: false, error: msg2.slice(0, 300) }; }
         }
+      }
+      if (attemptNum >= retries || !TRANSIENT.test(msg)) {
+        // falha definitiva: tenta sem window (fallback), senão devolve o erro
         try { return JSON.parse(attempt(false)); } catch {
           try { return JSON.parse(msg); } catch { return { ok: false, error: msg.slice(0, 300) }; }
         }
       }
-      // transient → retry (pequena pausa para o bridge recuperar)
       const delay = attemptNum + 1;
       const start = Date.now();
       while (Date.now() - start < delay * 500) { /* busy-wait curto */ }
@@ -583,8 +586,8 @@ async function scrapeStealth(url) {
     const d = JSON.parse(out.trim());
     const html = d.html || "";
     return { ok: true, title: d.title, len: d.len, url: d.url, html, html_len: html.length };
-  } catch (e) {
-    const msg = (e.stdout || e.message || "").toString().trim();
+    } catch (e) {
+      const msg = (e.stdout || e.stderr || e.message || "").toString().trim();
     return { ok: false, error: msg.slice(0, 200) };
   }
 }
