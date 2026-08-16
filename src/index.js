@@ -110,7 +110,7 @@ const server = new McpServer({ name: "super-browser", version: pkg.version });
 //        • browser_act/browse: NUNCA cachear (estado/HTML pode ser stale)
 //      ponytail: Map + timestamp, sem lib.
 const CACHE_TTL_BY_PREFIX = {
-  "quote:": 15 * 1000,        // volátil + crítico (trading) + refresh caro
+  "quote:": 60 * 1000,        // volátil + crítico (trading) + refresh caro (16-Ago: 15s→60s — grading: 9 símbolos em 361 chamadas, usos espaçados >15s → 40% do custo era spawns repetidos)
   "crypto:": 5 * 1000,        // muito volátil + refresh barato
   "binance:": 5 * 1000,       // idem (fallback do fetch direto)
   "defi:": 15 * 60 * 1000,    // estável + refresh barato → TTL longo
