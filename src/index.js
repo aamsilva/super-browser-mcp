@@ -49,7 +49,7 @@ function loadConfig() {
       "barchart", "twitter", "youtube", "bloomberg", "web", "google", "reddit", "instagram", "facebook"]),
     cloakPython: e("SUPER_BROWSER_CLOAK_PY", file.cloak?.python || "/Volumes/disco1tb/tools/scraping/.venv/bin/python3"),
     cloakMaxBytes: Number(e("SUPER_BROWSER_MAX_HTML", file.cloak?.maxHtmlBytes || 2000000)),
-    searxngUrl: e("SUPER_BROWSER_SEARXNG_URL", file.searxng?.url || "http://localhost:8081"),
+    searxngUrl: "", // searxng REMOVIDO 16-Ago (0 sucessos/48h) — mantido vazio para compatibilidade
     defaultSession: e("SUPER_BROWSER_SESSION", file.browser?.defaultSession || "mcp-main"),
     maxTabs: Number(e("SUPER_BROWSER_MAX_TABS", file.browser?.maxTabs || 30)),
     autoCloseRead: e("SUPER_BROWSER_AUTOCLOSE", String(file.browser?.autoCloseRead ?? true)) !== "false",
@@ -563,12 +563,12 @@ server.tool("scrape_stealth", "Scraping stealth via CloakBrowser — passa Cloud
     return { content: [{ type: "text", text: JSON.stringify(d) }] };
   });
 
-// ---- Web search: Google (opencli) PRIMÁRIO + searxng fallback ----
-// Decisão 15-Ago [VERIFICADO]: google via opencli (COOKIE autenticado) dá 3 results
-// em 2.7s sem CAPTCHA; searxng degradou (brave rate-limit, ddg timeout, startpage
-// CAPTCHA) -> 0 results. Google primeiro, searxng fallback. Cada query google abre
-// tab no Chrome bridge — fechar após a operação para reclamar memória (regra user).
-server.tool("web_search", "Pesquisa web: Google (opencli, autenticado) PRIMÁRIO + searxng fallback multi-engine. Devolve resultados normalizados; sinaliza degraded se ambas falharem.",
+// ---- Web search: Google (opencli) — searxng REMOVIDO (16-Ago) ----
+// Decisão [VERIFICADO telemetria 48h]: google COOKIE dá 100% dos sucessos; o fallback
+// searxng devolveu 0 resultados em 48h (18 falhas todas "engines suspensas/rate-limit")
+// e adicionava ~4s de latência de tentativa morta. Removido permanentemente.
+// Cada query google abre tab no Chrome bridge — fechar após a operação (regra user).
+server.tool("web_search", "Pesquisa web: Google (opencli, autenticado). Devolve resultados normalizados; sinaliza erro se falhar.",
   { query: z.string().describe("Query"), limit: z.number().optional() },
   async ({ query, limit = 5 }) => {
     // 1. Google via opencli (sessão COOKIE autenticada) — fiable, sem CAPTCHA
@@ -578,23 +578,10 @@ server.tool("web_search", "Pesquisa web: Google (opencli, autenticado) PRIMÁRIO
         title: r.title || "", url: r.url || "", snippet: (r.snippet || r.content || "").slice(0, 200),
       }));
       if (items.length > 0) return { content: [{ type: "text", text: JSON.stringify({ engine: "google", results: items }) }] };
-    } catch { /* google falhou -> searxng fallback */ }
-    // 2. Searxng fallback (multi-engine) — RETRY 1x (feedback T2 16-Ago 00:15:
-    // 33% das falhas são searxng 'engines suspensas/rate-limit' — retry recupera).
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const res = await fetch(`${CFG.searxngUrl}/search?q=${encodeURIComponent(query)}&format=json`);
-        const d = await res.json();
-        const items = (d.results || []).slice(0, limit).map(r => ({
-          title: r.title, url: r.url, snippet: (r.content || "").slice(0, 200),
-        }));
-        if (items.length > 0) return { content: [{ type: "text", text: JSON.stringify({ engine: "searxng", results: items, retries: attempt }) }] };
-        const degraded = Array.isArray(d.unresponsive_engines) && d.unresponsive_engines.length > 0 || !d.results;
-        if (degraded) { await new Promise(r => setTimeout(r, 500)); continue; } // retry após pausa
-      } catch { await new Promise(r => setTimeout(r, 500)); }
+      return { content: [{ type: "text", text: JSON.stringify({ ok: false, degraded: true, error: "google sem resultados", engine: "google" }) }] };
+    } catch (e) {
+      return { content: [{ type: "text", text: JSON.stringify({ ok: false, degraded: true, error: `google falhou: ${(e.message || "").slice(0, 120)}`, engine: "google" }) }] };
     }
-    return { content: [{ type: "text", text: JSON.stringify({ ok: false, degraded: true, error: "google+searxng sem resultados (searxng retry 2x)", engine: "searxng" }) }] };
-    return { content: [{ type: "text", text: JSON.stringify({ ok: false, degraded: true, error: "google+searxng ambos falharam" }) }] };
   });
 
 // ---- Health ----
