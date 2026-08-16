@@ -126,20 +126,45 @@ function ttlFor(key) {
   for (const [p, ttl] of Object.entries(CACHE_TTL_BY_PREFIX)) if (key.startsWith(p)) return ttl;
   return CACHE_TTL_MS;
 }
-const cache = new Map();
+// ---- Cache PERSISTENTE (user 16-Ago): o Map em memória zerava a cada sessão (MCP é
+//      lazy-spawn por sessão → cache perdida → spawns repetidos). Ficheiro JSON partilhado
+//      entre processos + escrita atómica (temp+rename) para concorrência segura.
+const CACHE_FILE = path.join(__dirname, "..", "cache_state.json");
+let cache = new Map();
+try {
+  const raw = fs.readFileSync(CACHE_FILE, "utf8");
+  cache = new Map(Object.entries(JSON.parse(raw)));
+} catch { /* primeira execução — cache vazia */ }
+let cacheDirty = false;
+let cacheWriteTimer = null;
+function persistCache() {
+  if (!cacheDirty) return;
+  cacheDirty = false;
+  try {
+    const tmp = CACHE_FILE + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries(cache)));
+    fs.renameSync(tmp, CACHE_FILE); // atómico: nunca ficheiro corrompido
+  } catch { /* best-effort */ }
+}
 async function cached(key, ttlMs, fn) {
   const ttl = ttlMs || ttlFor(key);
   const hit = cache.get(key);
   if (hit && Date.now() - hit.ts < ttl) return hit.data;
   const data = await fn();
-  if (ttl > 0) cache.set(key, { ts: Date.now(), data }); // ttl 0 = nunca cachear (browse/HTML)
+  if (ttl > 0) {
+    cache.set(key, { ts: Date.now(), data }); // ttl 0 = nunca cachear (browse/HTML)
+    cacheDirty = true;
+    if (!cacheWriteTimer) cacheWriteTimer = setTimeout(() => { cacheWriteTimer = null; persistCache(); }, 1000);
+  }
   // limpeza simples: evita crescimento infinito (ponytail: sem lib, per-entry TTL)
-  if (cache.size > 500) {
+  if (cache.size > 2000) {
     const now = Date.now();
-    for (const [k, v] of cache) if (now - v.ts > CACHE_TTL_MS) cache.delete(k);
+    for (const [k, v] of cache) if (now - v.ts > Math.max(ttlFor(k), CACHE_TTL_MS)) cache.delete(k);
+    persistCache();
   }
   return data;
 }
+process.on("exit", persistCache);
 async function cachedOc(key, args) {
   return cached(key, null, () => oc(args));
 }

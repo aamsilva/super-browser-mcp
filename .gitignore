@@ -10,3 +10,4 @@ config.json
 __pycache__/
 web-articles/
 capabilities_state.db*
+cache_state.json
