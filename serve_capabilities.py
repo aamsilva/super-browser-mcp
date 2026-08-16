@@ -2,7 +2,7 @@
 """serve_capabilities.py — Webview UI + API para o super-browser-mcp.
 
 Dashboard local (acessível por Tailscale 100.74.228.17) com:
-  - Monitoria: estado do bridge Chrome, searxng, serve opencode
+  - Monitoria: estado do bridge Chrome, serve opencode
   - Telemetria: histórico de chamadas (tool, latência, ok/fail)
   - Métricas: throughput, erros, latência p50/p95 (persistidas em capabilities_state.json)
   - Testes manuais: UI que chama cada tool MCP e mostra input/output realtime
@@ -25,7 +25,7 @@ MCP_BIN = f"{ROOT}/bin/super-browser-mcp.sh"
 
 # Config genérico (env > config.json) — sem hardcoded de máquina específica.
 def _cfg(k, d):
-    env = {"OPENCLI": "SUPER_BROWSER_OPENCLI", "SEARXNG": "SUPER_BROWSER_SEARXNG_URL",
+    env = {"OPENCLI": "SUPER_BROWSER_OPENCLI",
            "TAILSCALE": "SUPER_BROWSER_TAILSCALE_IP"}
     if os.environ.get(env.get(k, "__none__")):
         return os.environ[env[k]]
@@ -38,7 +38,6 @@ def _cfg(k, d):
     except Exception:
         return d
 OPENCLI = _cfg("OPENCLI", "/opt/homebrew/bin/opencli")
-SEARXNG_URL = _cfg("SEARXNG", "http://localhost:8081")
 TAILSCALE_IP = _cfg("TAILSCALE", "100.74.228.17")
 
 # Tools expostas + exemplos de input (exemplos vêm de config.json ui.toolExamples
@@ -112,19 +111,12 @@ def log_call(tool, ok, ms, error="", caller="webui", method="mcp-stdio", params=
     conn.commit()
 
 def state_snapshot():
-    """Estado vivo: bridge, searxng, serve, call stats."""
+    """Estado vivo: bridge, serve, call stats."""
     def bridge_auth():
         try:
             r = subprocess.run([OPENCLI, "youtube", "whoami", "--window", "background", "--format", "json"], capture_output=True, text=True, timeout=8)
             d = json.loads(r.stdout)
             return d.get("logged_in", False)
-        except Exception:
-            return False
-    def searxng():
-        try:
-            import urllib.request
-            with urllib.request.urlopen(SEARXNG_URL + "/", timeout=4):
-                return True
         except Exception:
             return False
     def serve():
@@ -140,7 +132,6 @@ def state_snapshot():
     p95 = lats[int(len(lats)*0.95)] if lats else 0
     return {
         "bridge_auth": bridge_auth(),
-        "searxng": searxng(),
         "opencode_serve": serve(),
         "calls_total": total,
         "calls_ok": ok_n,
@@ -285,7 +276,6 @@ pre{background:var(--surface);border:1px solid var(--border);border-radius:var(-
 async function snap(){try{const r=await fetch('/api/state');const s=await r.json();
 document.getElementById('st').innerHTML=`<div class="grid">
 <div class="kpi"><div class="l">Chrome bridge</div><div class="v"><span class="dot ${s.bridge_auth?'ok':'fail'}"></span>${s.bridge_auth?'OK':'DOWN'}</div></div>
-<div class="kpi"><div class="l">SearXNG</div><div class="v"><span class="dot ${s.searxng?'ok':'fail'}"></span>${s.searxng?'OK':'DOWN'}</div></div>
 <div class="kpi"><div class="l">opencode serve</div><div class="v"><span class="dot ${s.opencode_serve?'ok':'fail'}"></span>${s.opencode_serve?'OK':'DOWN'}</div></div>
 <div class="kpi"><div class="l">Chamadas</div><div class="v">${s.calls_total}</div></div>
 <div class="kpi"><div class="l">Erros</div><div class="v" style="color:${s.calls_fail>0?'var(--fail)':'inherit'}">${s.calls_fail}</div></div>
