@@ -608,12 +608,32 @@ server.tool("web_search", "Pesquisa web: Google (opencli, autenticado). Devolve 
   async ({ query, limit = 5 }) => {
     // Cache 60s por query: queries repetidas (news/check diário) não re-abrem o Chrome.
     const cachedRes = await cached(`web:${query}:${limit}`, null, () => {
-      try {
-        const g = oc(["google", "search", query, "--limit", String(limit)]);
-        const items = (Array.isArray(g) ? g : []).map(r => ({
+      // RETRY com query simplificada (16-Ago, erro observado): queries compostas
+      // (ex "Ukraine Russia war news August 16 2026 Moscow drones Wildberries")
+      // podem dar vazio no google — a 2ª tentativa remove palavras-chave genéricas
+      // (datas, números, 'news', 'update') e re-tenta com as palavras-chave reais.
+      const simplify = (q) => {
+        const words = q.split(/\s+/).filter(w => !/^(news|update|today|now|latest)$/i.test(w) && !/^\d+[a-z]*$/i.test(w));
+        // se o filtro removeu palavras, usar o filtrado (mesmo que ≤3); só corta o
+        // excesso quando ainda há muitas palavras-chave
+        const cleaned = words.join(" ");
+        if (cleaned !== q && words.length >= 1) return words.length > 3 ? words.slice(0, Math.max(3, Math.ceil(words.length / 2))).join(" ") : cleaned;
+        return words.length > 3 ? words.slice(0, 3).join(" ") : q;
+      };
+      const attemptSearch = (q) => {
+        const g = oc(["google", "search", q, "--limit", String(limit)]);
+        return (Array.isArray(g) ? g : []).map(r => ({
           title: r.title || "", url: r.url || "", snippet: (r.snippet || r.content || "").slice(0, 200),
         }));
-        if (items.length > 0) return { engine: "google", results: items };
+      };
+      try {
+        let simplified = null;
+        let items = attemptSearch(query);
+        if (items.length === 0) {
+          simplified = simplify(query);
+          if (simplified !== query) items = attemptSearch(simplified);
+        }
+        if (items.length > 0) return { engine: "google", results: items, simplified: simplified !== null && simplified !== query };
         return { ok: false, degraded: true, error: "google sem resultados", engine: "google" };
       } catch (e) {
         return { ok: false, degraded: true, error: `google falhou: ${(e.message || "").slice(0, 120)}`, engine: "google" };
