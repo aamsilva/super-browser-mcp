@@ -1,6 +1,6 @@
 {
   "name": "super-browser-mcp",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "description": "MCP server que exp\u00f5e as capacidades de browsing/finance do Mac Mini (opencli + Chrome bridge autenticado + searxng) como tools MCP. Consum\u00edvel por opencode, VS Code, Antigravity, Claude Code, Cursor e remotamente pela VPS.",
   "main": "index.js",
   "scripts": {
