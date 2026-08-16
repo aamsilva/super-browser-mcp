@@ -542,7 +542,9 @@ server.tool("browser_agent", "Automação browser via agent-browser (headless, s
       } else {
         return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: `Ação inválida: ${action}. Disponíveis: open, snapshot, fill, type, click, press, scroll, close` }) }] };
       }
-      return { content: [{ type: "text", text: JSON.stringify({ ok: true, output: out.slice(0, 20000) }) }] };
+      // browser_agent output COMPLETO (16-Ago): antes truncava a 20K (mesmo bug do
+      // transcript). O MCP aguenta 64MB — nunca truncar dados, só metadados/erros.
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, output: out }) }] };
     } catch (e) {
       const msg = (e.stdout || e.message || "").toString().trim();
       return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: msg.slice(0, 300) }) }] };
