@@ -453,8 +453,12 @@ server.tool("browser_act", `Executa uma ação de automação browser no Chrome 
       // BUG 1 fix (feedback T2 23:27): args.keep=true desativa o auto-close —
       // permite multi-step open→eval→eval na MESMA sessão (rdk_board loop de eval).
       const READ_ACTIONS = new Set(["extract", "state", "eval", "screenshot", "get", "tab"]);
+      // SESSÕES PROTEGIDAS (user 16-Ago): sites RDK (jira/wiki Okta) NUNCA podem ser
+      // fechados pelo auto-close — fechar mata a sessão Okta → reautenticar exige MFA
+      // do user. Keepalive mantém o cookie vivo; fechar seria catastrófico.
+      const PROTECTED_SESSIONS = new Set(["rdk", "rdk2"]);
       if (READ_ACTIONS.has(action) && CFG.autoCloseRead && !keep) {
-        const isMaster = session === DEFAULT_SESSION;
+        const isMaster = session === DEFAULT_SESSION || PROTECTED_SESSIONS.has(session);
         if (!isMaster) {
           // sessão de teste/efémera → fechar tudo
           try { browserExec("close", {}, session); } catch { /* fechar best-effort */ }
