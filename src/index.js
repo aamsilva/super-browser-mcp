@@ -600,20 +600,23 @@ server.tool("scrape_stealth", "Scraping stealth via CloakBrowser — passa Cloud
 // searxng devolveu 0 resultados em 48h (18 falhas todas "engines suspensas/rate-limit")
 // e adicionava ~4s de latência de tentativa morta. Removido permanentemente.
 // Cada query google abre tab no Chrome bridge — fechar após a operação (regra user).
-server.tool("web_search", "Pesquisa web: Google (opencli, autenticado). Devolve resultados normalizados; sinaliza erro se falhar.",
+server.tool("web_search", "Pesquisa web: Google (opencli, autenticado). Devolve resultados normalizados; sinaliza erro se falhar. Cache 60s por query (grading 16-Ago oport 3: 236 chamadas eram o 2º custo).",
   { query: z.string().describe("Query"), limit: z.number().optional() },
   async ({ query, limit = 5 }) => {
-    // 1. Google via opencli (sessão COOKIE autenticada) — fiable, sem CAPTCHA
-    try {
-      const g = oc(["google", "search", query, "--limit", String(limit)]);
-      const items = (Array.isArray(g) ? g : []).map(r => ({
-        title: r.title || "", url: r.url || "", snippet: (r.snippet || r.content || "").slice(0, 200),
-      }));
-      if (items.length > 0) return { content: [{ type: "text", text: JSON.stringify({ engine: "google", results: items }) }] };
-      return { content: [{ type: "text", text: JSON.stringify({ ok: false, degraded: true, error: "google sem resultados", engine: "google" }) }] };
-    } catch (e) {
-      return { content: [{ type: "text", text: JSON.stringify({ ok: false, degraded: true, error: `google falhou: ${(e.message || "").slice(0, 120)}`, engine: "google" }) }] };
-    }
+    // Cache 60s por query: queries repetidas (news/check diário) não re-abrem o Chrome.
+    const cachedRes = await cached(`web:${query}:${limit}`, null, () => {
+      try {
+        const g = oc(["google", "search", query, "--limit", String(limit)]);
+        const items = (Array.isArray(g) ? g : []).map(r => ({
+          title: r.title || "", url: r.url || "", snippet: (r.snippet || r.content || "").slice(0, 200),
+        }));
+        if (items.length > 0) return { engine: "google", results: items };
+        return { ok: false, degraded: true, error: "google sem resultados", engine: "google" };
+      } catch (e) {
+        return { ok: false, degraded: true, error: `google falhou: ${(e.message || "").slice(0, 120)}`, engine: "google" };
+      }
+    });
+    return { content: [{ type: "text", text: JSON.stringify(cachedRes) }] };
   });
 
 // ---- Health ----
@@ -696,10 +699,12 @@ server.tool("auth_check", "Valida autenticação por NAVEGAÇÃO (fiável, não 
 // Percorre TODOS os sites autenticados e devolve o estado de cada um (auth OK/FALHA).
 // O keepalive + auth_check garantem que nunca se perde a sessão; o audit é o report.
 // Uso: site_search? Não — tool própria para monitorização/telemetria.
-server.tool("auth_audit", "Audita a autenticação de TODOS os sites autenticados (navegação, não whoami). Devolve {site, authenticated, ok, url}. Sites: reddit, instagram, github, twitter, youtube, amazon, rdk, chatgpt, deepseek, facebook, gemini, notebooklm, opencode, perplexity, qwen, reuters, tiktok, sharepoint.",
-  { refresh: z.boolean().optional().describe("true = forçar re-navegação (lento ~60s); false = só log/último estado (rápido)") },
-  async ({ refresh = true }) => {
-    const sites = Object.keys(AUTH_PROBES).filter(s => s !== "generic");
+server.tool("auth_audit", "Audita a autenticação de TODOS os sites autenticados (navegação, não whoami). Devolve {site, authenticated, ok, url}. Sites: reddit, instagram, github, twitter, youtube, amazon, rdk, chatgpt, deepseek, facebook, gemini, notebooklm, opencode, perplexity, qwen, reuters, tiktok, sharepoint. refresh=false (default) = rápido (estado conhecido); refresh=true = re-navega todos (~60s); fast=true = só os 6 críticos (rdk, youtube, twitter, github, amazon, sharepoint).",
+  { refresh: z.boolean().optional().describe("true = re-navega todos (~60s); false (default) = estado conhecido (rápido)"), fast: z.boolean().optional().describe("true = só os 6 críticos (rdk, youtube, twitter, github, amazon, sharepoint) — rápido ~30s") },
+  async ({ refresh = false, fast = false }) => {
+    const all = Object.keys(AUTH_PROBES).filter(s => s !== "generic");
+    // FAST: só os críticos (16-Ago oport 2: 18 sites navegados = ~99s > timeout wrapper)
+    const sites = fast ? ["rdk", "youtube", "twitter", "github", "amazon", "sharepoint"] : all;
     const results = [];
     if (!refresh) {
       // modo rápido: estado conhecido (sessões protegidas + whoami)
