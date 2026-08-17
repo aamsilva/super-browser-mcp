@@ -704,14 +704,18 @@ server.tool("auth_check", "Valida autenticação por NAVEGAÇÃO (fiável, não 
     try {
       browserExec("open", { url }, session, "background");
       await new Promise(r => setTimeout(r, 4000));
-      const st = browserExec("eval", { js: `(() => { const u = location.href; return { url: u, redirected: /(login\\.rdkcentral|\\/(login|accounts\\/login|signin))(\\?|\\/|$)/.test(u) }; })()` }, session);
+      // FIX 17-Ago: AccessDenied.aspx (SharePoint autenticado SEM permissão no site) NÃO
+      // redireciona para login → o audit antigo contava-o como autenticado (falso positivo).
+      // Detetar explicitamente: access denied ≠ auth OK.
+      const st = browserExec("eval", { js: `(() => { const u = location.href; return { url: u, redirected: /(login\\.rdkcentral|\\/(login|accounts\\/login|signin))(\\?|\\/|$)/.test(u), accessDenied: /AccessDenied|denied\\.aspx|access denied|permiss\\w* \\w*negad|AadGenericAcceptance|login\\.microsoftonline\\.com\\/common\\/oauth2\\/v2\\.0\\/error/i.test(u) }; })()` }, session);
       // browserExec devolve JSON parseado (eval devolve objeto) ou {raw: texto}
       const d = st.raw ? JSON.parse(st.raw) : st;
       const urlFinal = d.url || "";
       const redirected = d.redirected === true || /(login\.rdkcentral|\/login)/.test(urlFinal);
-      const authenticated = !redirected && urlFinal.length > 0;
+      const accessDenied = d.accessDenied === true || /(AccessDenied|denied\.aspx|access denied|permiss\w* \w*negad|login\.microsoftonline\.com\/common\/oauth2\/v2\.0\/error)/.test(urlFinal);
+      const authenticated = !redirected && !accessDenied && urlFinal.length > 0;
       if (!isProtected) { try { browserExec("close", {}, session); } catch {} }
-      return { content: [{ type: "text", text: JSON.stringify({ site, authenticated, url: urlFinal, redirected }) }] };
+      return { content: [{ type: "text", text: JSON.stringify({ site, authenticated, access_denied: accessDenied, url: urlFinal, redirected }) }] };
     } catch (e) {
       if (!isProtected) { try { browserExec("close", {}, session); } catch {} }
       return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: e.message }) }] };
@@ -747,12 +751,18 @@ server.tool("auth_audit", "Audita a autenticação de TODOS os sites autenticado
         const opened = await browserExecAsync("open", { url: AUTH_PROBES[s] }, session, "background", 8000);
         if (opened.ok === false) return { site: s, ok: false, error: opened.error };
         await new Promise(r => setTimeout(r, 1500));
-        const st = await browserExecAsync("eval", { js: `(() => { const u = location.href; return { url: u, redirected: /(login\\.rdkcentral|login\\.microsoftonline|\\/(login|accounts\\/login|signin))(\\?|\\/|$)/.test(u) }; })()` }, session, "background", 8000);
+
+        // FIX 17-Ago (mesmo do auth_check): AccessDenied.aspx (sessão OK, permissão negada
+        // no site) não redireciona p/ login — detetar explicitamente + incluir AccessDenied
+        // body text (o URL pode ficar em AccessDenied.aspx com query longa; reforçar com o
+        // texto visível). httponly do sharepoint devolve a página, o body é a prova.
+        const st = await browserExecAsync("eval", { js: `(() => { const u = location.href; const b = document.body ? document.body.innerText.slice(0, 300) : ""; return { url: u, bodyText: b, redirected: /(login\\.rdkcentral|login\\.microsoftonline|\\/(login|accounts\\/login|signin))(\\?|\\/|$)/.test(u), accessDenied: /AccessDenied|denied\\.aspx|access denied|permiss\\w* \\w*negad|solicitou acesso|requested access/i.test(u + " " + b) }; })()` }, session, "background", 8000);
         const d = st.raw ? JSON.parse(st.raw) : st;
         const urlFinal = d.url || "";
         const redirected = d.redirected === true || /(login\.rdkcentral|login\.microsoftonline|\/login)/.test(urlFinal);
+        const accessDenied = d.accessDenied === true || /(AccessDenied|denied\.aspx|access denied|permiss\w* \w*negad|solicitou acesso|requested access)/i.test(urlFinal + " " + (d.bodyText || ""));
         if (!isProtected) { try { await browserExecAsync("close", {}, session, "background", 8000); } catch {} }
-        return { site: s, authenticated: !redirected && urlFinal.length > 0, ok: true, url: urlFinal.slice(0, 80), redirected };
+        return { site: s, authenticated: !redirected && !accessDenied && urlFinal.length > 0, access_denied: accessDenied, ok: true, url: urlFinal.slice(0, 80), redirected };
       } catch (e) {
         if (!isProtected) { try { await browserExecAsync("close", {}, session, "background", 8000); } catch {} }
         return { site: s, ok: false, error: e.message.slice(0, 60) };
