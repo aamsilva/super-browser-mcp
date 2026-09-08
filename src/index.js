@@ -337,13 +337,42 @@ server.tool("finance_defi", "Top DeFi por TVL (defillama).",
   });
 
 // ---- Sentimento social (autenticado via Chrome) ----
+// camofoxSentiment (v1.5.6): X/Twitter search via camofox (cookies importados,
+// x.com autenticado) — substitui o bridge nos use cases de sentimento.
+async function camofoxSentiment(query, limit = 5) {
+  if (!(await camofoxEnsure())) return { ok: false, camofox_skip: true };
+  try {
+    const { tab, mk, close } = await camofoxTab("https://x.com/search?q=" + encodeURIComponent(query) + "&f=live", { wait: 9000, dismissConsent: true });
+    const limJ = JSON.stringify(limit || 5);
+    const expr = "(() => { const arts = [...document.querySelectorAll('article[data-testid=\"tweet\"]')].slice(0," + limJ + ").map(a => ({ autor: ((a.querySelector('a[href^=\"/\"][role=\"link\"] span')||a.querySelector('a[href^=\"/\"] span')||{}).textContent||'').trim().slice(0,40), texto: ((a.querySelector('[data-testid=\"tweetText\"]')||{}).textContent||'').trim().slice(0,300) })); return { logado: !!document.querySelector('[data-testid=\"SideNav_AccountSwitcher_Button\"]'), err: document.body.innerText.includes('Something went wrong'), arts: arts.filter(t => t.texto) }; })()";
+    // v1.5.6 fix: polling — a timeline SPA renderiza depois da rede idle; 6 tentativas × 2s;
+    // "Something went wrong" (SPA error em sessão restaurada) → reload da tab e re-poll
+    let res = {};
+    const searchUrl = "https://x.com/search?q=" + encodeURIComponent(query) + "&f=live";
+    for (let i = 0; i < 6; i++) {
+      const r = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
+      res = r.result || {};
+      if (res.arts && res.arts.length > 0) break;
+      if (res.err) { await mk("POST", "/tabs/" + tab + "/navigate", { userId: CFG.camofoxUser, url: searchUrl }); await mk("POST", "/tabs/" + tab + "/wait", { userId: CFG.camofoxUser, timeout: 8000 }).catch(() => {}); }
+      await new Promise(r2 => setTimeout(r2, 2000));
+    }
+    await close();
+    if (!res.logado) return { ok: false, camofox_skip: true, error: "x.com não autenticado no camofox" };
+    return { ok: true, engine: "camofox", n: (res.arts || []).length, items: res.arts || [] };
+  } catch (e) { return { ok: false, camofox_skip: true, error: String(e.message || e).slice(0, 120) }; }
+}
+
 server.tool("social_sentiment", "Sentimento social de um ticker (X/Twitter autenticado).",
   { query: z.string().describe("Query (ex: NVDA OR NVIDIA)"), limit: z.number().optional() },
   async ({ query, limit = 5 }) => {
-    // v1.5.5: fast-fail — o twitter search usa o bridge browser (Chrome morto
-    // = 182s pendurado). Responder imediato.
+    // v1.5.6: CAMOFOX PRIMEIRO (x.com autenticado via cookies importados) —
+    // bridge opencli é o fallback; fast-fail mantido se ambos indisponíveis.
+    const cf = await camofoxSentiment(query, limit);
+    if (cf.ok && cf.items && cf.items.length > 0) {
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, engine: "camofox", n: cf.n, items: cf.items }) }] };
+    }
     if (!bridgeAlive()) {
-      return { content: [{ type: "text", text: JSON.stringify({ ok: false, bridge_down: true, hint: "Chrome não corre; social_sentiment usa o bridge. Reabrir: opencli browser main open <url>." }) }] };
+      return { content: [{ type: "text", text: JSON.stringify({ ok: false, bridge_down: true, camofox_error: cf.error, hint: "Chrome não corre; social_sentiment usa o bridge. Reabrir: opencli browser main open <url>." }) }] };
     }
     // P2-3 fix (feedback T2 15-Ago): connection closed intermitente no 1º try (~1/5) —
     // retry 1x antes de falhar.
@@ -686,6 +715,22 @@ async function camofoxHtml(url) {
     return { ok: true, url, engine: "camofox", html: String(html).slice(0, CFG.camofoxMaxBytes), html_len: String(html).length };
   } catch (e) { return { ok: false, error: String(e.message || e).slice(0, 200) }; }
 }
+// v1.5.6: descodificar google.com/goto?url=<b64 protobuf> → URL directa.
+// A sessão autenticada devolve wrappers goto; o URL real vive no payload
+// base64 (campo protobuf com string http). Fallback: manter o wrapper.
+function decodeGotoUrl(u) {
+  if (!u || !u.includes("google.com/goto")) return u;
+  try {
+    const m = u.match(/[?&]url=([^&]+)/);
+    if (!m) return u;
+    let b64 = decodeURIComponent(m[1]).replace(/-/g, "+").replace(/_/g, "/");
+    while (b64.length % 4) b64 += "=";
+    const buf = Buffer.from(b64, "base64");
+    const hit = buf.toString("latin1").match(/https?:\/\/[^\x00-\x1f"\s]{4,}/);
+    return hit ? hit[0] : u;
+  } catch { return u; }
+}
+
 async function camofoxSearch(query, num = 10) {
   if (!(await camofoxEnsure())) return { ok: false, error: "camofox indisponível" };
   try {
@@ -701,14 +746,18 @@ async function camofoxSearch(query, num = 10) {
       // v1.5.1 fix: sessão autenticada devolve URLs via wrapper google.com/goto (302
       // p/ destino) — NÃO filtrar por "google." ou perde-se TUDO. Filtrar só a própria SERP.
       if (/google\.[a-z.]+\/search|accounts\.google|policies\.google/.test(t[2])) continue;
+      // v1.5.6: descodificar goto → URL directa (qualidade = opencli)
       results.push({
-        title: t[1], url: t[2],
+        title: t[1], url: decodeGotoUrl(t[2]),
         cite: (b.match(/- cite: ([^\n]+)/) || [])[1] || "",
         snippet: (b.match(/- text: ([^\n]+)/) || [])[1] || "",
         // cite contém o domínio real (ex: "altmansolon.com › ...") — útil c/ wrapper goto
       });
     }
-    return { ok: true, query, engine: "camofox", n: results.length, results: results.slice(0, num) };
+    // v1.5.6: dedupe por URL (serps com vídeo duplicam thumb+title links)
+    const seen = new Set();
+    const uniq = results.filter(r => !seen.has(r.url) && seen.add(r.url));
+    return { ok: true, query, engine: "camofox", n: uniq.length, results: uniq.slice(0, num) };
   } catch (e) { return { ok: false, error: String(e.message || e).slice(0, 200) }; }
 }
 
@@ -1113,7 +1162,7 @@ if (_origCallTool) {
 }
 // v1.5.0: CAMOFOX_TEST exporta os internals da chain p/ testes sem arrancar o server stdio
 if (process.env.CAMOFOX_TEST) {
-  module.exports = { camofoxHealth, camofoxEnsure, camofoxBrowse, camofoxHtml, camofoxSearch, scrapeStealth, camofoxTab, camofoxAct };
+  module.exports = { camofoxHealth, camofoxEnsure, camofoxBrowse, camofoxHtml, camofoxSearch, scrapeStealth, camofoxTab, camofoxAct, camofoxSentiment };
 } else {
   main().catch((e) => { console.error("[super-browser-mcp] fatal:", e.message); process.exit(1); });
 }
