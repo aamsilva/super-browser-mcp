@@ -207,6 +207,15 @@ function normalizeDefi(raw, limit) {
 server.tool("site_search", "Pesquisa num site específico via opencli (adapter). Sites: youtube (search/feed/history/subscriptions/transcript), twitter (trending/timeline/search/bookmarks), google (news/search/trends), reddit (hot/search), bbc (news), hackernews (top/best), defillama (protocols/protocol), linkedin (inbox/posts/people-search). Uso: site + comando + query. Para comandos POSICIONAIS (defillama protocol <slug>, youtube transcript <url>) usar arg (não query).",
   { site: z.string().describe("Site (ex: youtube, twitter, google, reddit, bbc, hackernews, defillama, linkedin, github, barchart)"), command: z.string().describe("Comando do site (ex: search, trending, timeline, news, top, protocol, transcript, inbox, repos, prs, issues, releases)"), query: z.string().optional().describe("Query (para comandos de search)"), arg: z.string().optional().describe("Argumento posicional para comandos como protocol/transcript (ex: slug, URL de video)"), limit: z.number().optional(), fresh: z.number().optional().describe("Filtro de frescura (P3-6, feedback T2): só resultados com date <= N dias de idade. Aplica a google news.") },
   async ({ site, command, query, arg, limit = 5, fresh }) => {
+    // v1.5.7: twitter search via CAMOFOX primeiro (x.com autenticado; o bridge
+    // dava 91s BROWSER_CONNECT com Chrome morto) — fallback opencli abaixo.
+    if (site === "twitter" && command === "search" && query) {
+      const ct = await camofoxSentiment(query, limit || 5);
+      if (ct.ok && ct.items && ct.items.length > 0) {
+        const items = ct.items.map(t => ({ user: t.autor, text: t.texto, engine: "camofox" }));
+        return { content: [{ type: "text", text: JSON.stringify({ engine: "camofox", n: items.length, results: items }) }] };
+      }
+    }
     // v1.5.5: fast-fail — sites cujos adapters usam o bridge browser (Chrome morto
     // = 91s pendurado em BROWSER_CONNECT). Sites API-only (google/defillama) passam.
     const BROWSER_SITES = new Set(["twitter", "amazon", "instagram", "facebook", "linkedin", "barchart"]);
@@ -358,6 +367,17 @@ async function camofoxSentiment(query, limit = 5) {
     }
     await close();
     if (!res.logado) return { ok: false, camofox_skip: true, error: "x.com não autenticado no camofox" };
+    // v1.5.7: live vazio → re-pesquisar em "Top" (sem f=live — tem sempre conteúdo)
+    if (!res.arts || res.arts.length === 0) {
+      await mk("POST", "/tabs/" + tab + "/navigate", { userId: CFG.camofoxUser, url: "https://x.com/search?q=" + encodeURIComponent(query) });
+      await mk("POST", "/tabs/" + tab + "/wait", { userId: CFG.camofoxUser, timeout: 8000 }).catch(() => {});
+      for (let i = 0; i < 4; i++) {
+        const r2 = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
+        res = r2.result || {};
+        if (res.arts && res.arts.length > 0) break;
+        await new Promise(r3 => setTimeout(r3, 2000));
+      }
+    }
     return { ok: true, engine: "camofox", n: (res.arts || []).length, items: res.arts || [] };
   } catch (e) { return { ok: false, camofox_skip: true, error: String(e.message || e).slice(0, 120) }; }
 }
