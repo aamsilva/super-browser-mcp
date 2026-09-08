@@ -893,20 +893,42 @@ server.tool("web_search", "Pesquisa web: Google (opencli, autenticado). Devolve 
   });
 
 // ---- Health ----
-server.tool("health", "Estado do super-browser-mcp + conectividade.",
+server.tool("health", "Estado do super-browser-mcp + conectividade (bridge + camofox).",
   {},
   async () => {
+    // v1.5.4: fast-fail — Chrome morto → bridge_auth:"down" imediato (sem pendurar
+    // 90s no whoami). O estado camofox também é reportado.
+    if (!bridgeAlive()) {
+      return { content: [{ type: "text", text: JSON.stringify({
+        ok: true, bridge_auth: "down", degraded: true,
+        camofox: await camofoxHealth() ? "up" : "down",
+        version: pkg.version, time: new Date().toISOString(),
+      }) }] };
+    }
     const bridge = oc(["youtube", "whoami"]);
     return { content: [{ type: "text", text: JSON.stringify({
       ok: true, bridge_auth: bridge && bridge.logged_in ? "logged_in" : "unknown",
+      camofox: await camofoxHealth() ? "up" : "down",
       version: pkg.version, time: new Date().toISOString(),
     }) }] };
   });
 
 // ---- Auth status (replica opencli auth status — sessões autenticadas por site) ----
+// bridgeAlive (v1.5.4): o user matou o Chrome manualmente (09-Set) e os tools
+// dependentes do bridge penduravam 90s (oc timeout) em vez de falhar rápido.
+// Probe de 10ms via pgrep — SEM arrancar o Chrome (auto-launch fica on-demand).
+function bridgeAlive() {
+  try { execFileSync("pgrep", ["-f", "Google Chrome$"], { timeout: 3000, stdio: ["ignore", "pipe", "pipe"] }); return true; }
+  catch { return false; }
+}
+
 server.tool("auth_status", "Estado de autenticação por site (opencli auth status). Lista quais sites têm sessão ativa no Chrome bridge (logged_in/not_logged_in).",
   {},
   async () => {
+    // v1.5.4: fast-fail — Chrome morto → resposta imediata em vez de pendurar 90s
+    if (!bridgeAlive()) {
+      return { content: [{ type: "text", text: JSON.stringify({ ok: false, bridge_down: true, hint: "Chrome não corre (fechado pelo user). Os tools camofox não dependem dele. Reabrir: opencli browser main open <url> — auto-launch on-demand." }) }] };
+    }
     const out = execFileSync(CFG.opencliBin, ["auth", "status", "--format", "json"], {
       timeout: CFG.timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
     });
@@ -946,6 +968,10 @@ const AUTH_PROBES = {
 server.tool("auth_check", "Valida autenticação por NAVEGAÇÃO (fiável, não usa whoami): abre uma página só-autenticada do site e verifica se redireciona para login. Sites: reddit, instagram, github, twitter, youtube, amazon, rdk. Devolve {authenticated, url, redirected}. Isto substitui o whoami do opencli (não fidedigno).",
   { site: z.string().describe("Site: reddit | instagram | github | twitter | youtube | amazon | rdk") },
   async ({ site }) => {
+    // v1.5.4: fast-fail — Chrome morto → resposta imediata (não pendurar)
+    if (!bridgeAlive()) {
+      return { content: [{ type: "text", text: JSON.stringify({ ok: false, bridge_down: true, site, hint: "Chrome não corre. Reabrir: opencli browser main open <url> — auto-launch on-demand." }) }] };
+    }
     const url = AUTH_PROBES[site];
     if (!url) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: `Site desconhecido: ${site}. Disponíveis: ${Object.keys(AUTH_PROBES).join(", ")}` }) }] };
     // rdk usa a sessão protegida (nunca fechar — MFA); os outros usam sessão efémera.

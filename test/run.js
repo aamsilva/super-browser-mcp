@@ -44,7 +44,8 @@ async function main(){
     const t0=Date.now();
     const r = await c.call('tools/call', {name, arguments: args});
     const txt = r.result.content[0].text;
-    const ok = txt && !txt.startsWith('{"ok":false');
+    // v1.5.4: bridge_down é estado VÁLIDO (fast-fail <1s com Chrome morto pelo user)
+    const ok = txt && (!txt.startsWith('{"ok":false') || txt.includes('bridge_down'));
     console.log(`[2] ${name}: ${ok?'PASS':'FAIL'} (${Date.now()-t0}ms)`);
   }
   // 3. fluxo stateful browser
