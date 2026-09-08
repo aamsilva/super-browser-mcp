@@ -209,6 +209,14 @@ server.tool("site_search", "Pesquisa num site específico via opencli (adapter).
   async ({ site, command, query, arg, limit = 5, fresh }) => {
     // v1.5.7: twitter search via CAMOFOX primeiro (x.com autenticado; o bridge
     // dava 91s BROWSER_CONNECT com Chrome morto) — fallback opencli abaixo.
+    // v1.5.8: linkedin people/posts/inbox → camofox (li_at authed, padrão provado)
+    if (site === "linkedin") {
+      const kind = command === "posts" ? "posts" : command === "inbox" ? "inbox" : "people";
+      const cl = await camofoxLinkedIn(kind, query || "", limit || 5);
+      if (cl.ok && cl.items && cl.items.length > 0) {
+        return { content: [{ type: "text", text: JSON.stringify({ engine: "camofox", kind: cl.kind, n: cl.n, results: cl.items }) }] };
+      }
+    }
     if (site === "twitter" && command === "search" && query) {
       const ct = await camofoxSentiment(query, limit || 5);
       if (ct.ok && ct.items && ct.items.length > 0) {
@@ -380,6 +388,41 @@ async function camofoxSentiment(query, limit = 5) {
     }
     return { ok: true, engine: "camofox", n: (res.arts || []).length, items: res.arts || [] };
   } catch (e) { return { ok: false, camofox_skip: true, error: String(e.message || e).slice(0, 120) }; }
+}
+
+// camofoxLinkedIn (v1.5.8): linkedin people/posts/inbox via camofox (li_at authed)
+async function camofoxLinkedIn(kind, query, limit = 5) {
+  if (!(await camofoxEnsure())) return { ok: false, camofox_skip: true };
+  try {
+    const { tab, mk, close } = await camofoxTab(linkedInUrl(kind, query), { wait: 10000, dismissConsent: true });
+    const limJ = JSON.stringify(limit || 5);
+    let expr;
+    if (kind === "people") {
+      expr = "(() => { const seen = new Set(); const out = []; [...document.querySelectorAll('a[href*=\x22/in/\x22]')].forEach(a => { if (out.length >= " + limJ + ") return; const c = a.closest('div[data-view-name], li, .entity-result') || a.parentElement?.parentElement; if (!c) return; const txt = (c.innerText||'').split('\\n').map(s=>s.trim()).filter(Boolean); if (txt.length < 3) return; const u = (a.getAttribute('href')||'').split('?')[0]; if (!u.includes('/in/') || seen.has(u)) return; seen.add(u); const nome = txt[0]; const grau = (txt.find(l => /\\d(st|nd|rd|th)/.test(l)) || ''); const cargo = (txt[2] || ''); const local = (txt.find(l => /,/.test(l) && l.length < 60 && !l.startsWith('Current') && !l.startsWith('Atual')) || ''); const atual = (txt.find(l => l.startsWith('Current:') || l.startsWith('Atual:')) || '').slice(0,90); out.push({ nome, grau, cargo, local, atual, url: 'https://www.linkedin.com' + u }); }); return { items: out }; })()";
+    } else if (kind === "inbox") {
+      expr = "(() => { const ms = [...document.querySelectorAll('li.msg-conversation-listitem')].slice(0," + limJ + ").map(e => { const l = (e.innerText||'').split('\\n').map(s=>s.trim()).filter(Boolean); return { contacto: l[1] || l[0] || '', quando: l[2] || '', preview: l.slice(4).join(' ').slice(0,140) }; }); return { items: ms }; })()";
+    } else {
+      // posts: blocos de texto do body (author • time + conteúdo)
+      expr = "(() => { const parts = document.body.innerText.split('\\n\\n').filter(b => b.includes('• ') && b.length > 80).slice(0," + limJ + ").map(b => b.replace(/\\n/g,' | ').slice(0,300)); return { items: parts }; })()";
+    }
+    // polling: SPA do linkedin renderiza depois da rede idle (4×2s)
+    let res = {};
+    for (let i = 0; i < 4; i++) {
+      const r = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
+      res = r.result || {};
+      if (res.items && res.items.length > 0) break;
+      await new Promise(r2 => setTimeout(r2, 2000));
+    }
+    await close();
+    return { ok: true, engine: "camofox", kind, n: (res.items || []).length, items: res.items || [] };
+  } catch (e) { return { ok: false, camofox_skip: true, error: String(e.message || e).slice(0, 120) }; }
+}
+function linkedInUrl(kind, query) {
+  const q = encodeURIComponent(query || "");
+  if (kind === "people") return "https://www.linkedin.com/search/results/people/?keywords=" + q;
+  if (kind === "posts") return "https://www.linkedin.com/search/results/content/?keywords=" + q;
+  if (kind === "inbox") return "https://www.linkedin.com/messaging/";
+  return "https://www.linkedin.com/feed/";
 }
 
 server.tool("social_sentiment", "Sentimento social de um ticker (X/Twitter autenticado).",
@@ -1182,7 +1225,7 @@ if (_origCallTool) {
 }
 // v1.5.0: CAMOFOX_TEST exporta os internals da chain p/ testes sem arrancar o server stdio
 if (process.env.CAMOFOX_TEST) {
-  module.exports = { camofoxHealth, camofoxEnsure, camofoxBrowse, camofoxHtml, camofoxSearch, scrapeStealth, camofoxTab, camofoxAct, camofoxSentiment };
+  module.exports = { camofoxHealth, camofoxEnsure, camofoxBrowse, camofoxHtml, camofoxSearch, scrapeStealth, camofoxTab, camofoxAct, camofoxSentiment, camofoxLinkedIn };
 } else {
   main().catch((e) => { console.error("[super-browser-mcp] fatal:", e.message); process.exit(1); });
 }
