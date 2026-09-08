@@ -54,6 +54,11 @@ function loadConfig() {
     maxTabs: Number(e("SUPER_BROWSER_MAX_TABS", file.browser?.maxTabs || 30)),
     autoCloseRead: e("SUPER_BROWSER_AUTOCLOSE", String(file.browser?.autoCloseRead ?? true)) !== "false",
     timeoutMs: Number(e("SUPER_BROWSER_TIMEOUT_MS", file.cloak?.timeoutMs || 45000)),
+    // v1.5.0 (09-Set): camofox como tier 1 — stealth+auth headless, 0MB idle
+    camofoxUrl: e("CAMOFOX_URL", "http://127.0.0.1:9377"),
+    camofoxDir: e("CAMOFOX_DIR", "/Volumes/disco1tb/tools/camofox-browser"),
+    camofoxMaxBytes: Number(e("SUPER_BROWSER_CAMOFOX_MAX", file.camofox?.maxBytes || 100000)),
+    camofoxUser: e("CAMOFOX_USER", file.camofox?.user || "mcp"),
   };
 }
 const CFG = loadConfig();
@@ -323,14 +328,16 @@ server.tool("social_sentiment", "Sentimento social de um ticker (X/Twitter auten
   });
 
 // ---- Browser genérico (qualquer site, Chrome bridge autenticado) ----
-server.tool("browser_browse", "Navega para qualquer URL e extrai conteúdo (markdown). Devolve o conteúdo REAL do artigo. FALLBACK: se o opencli web.read falhar/timeout (bridge lento), usa CloakBrowser (stealth).",
+server.tool("browser_browse", "Navega para qualquer URL e extrai conteúdo. CHAIN v1.5.0: camofox (stealth+auth headless, cookies do Chrome importados) → opencli web.read (bridge) → CloakBrowser (stealth legado).",
   { url: z.string().describe("URL completo") },
   async ({ url }) => {
     // web read usa --url (flag, não posicional) e não aceita --window.
     // O opencli guarda o markdown em web-articles/<site>/<site>.md (cwd ou ~).
-    // Fallback (15-Ago, lição T2): se o bridge Chrome está lento, o web.read
-    // pendura — usar CloakBrowser (stealth, não depende do bridge) com timeout curto.
-    const d = await cached(`browse:${url}`, null, () => {
+    // v1.5.0: camofox PRIMEIRO (stealth+auth, sem tocar no bridge Chrome que
+    // acumula memória); opencli web.read segue; CloakBrowser é o último recurso.
+    const d = await cached(`browse:${url}`, null, async () => {
+      const cf = await camofoxBrowse(url);
+      if (cf.ok) return cf;
       try {
         // P2 fix (feedback T1 15-Ago): amazon order-history demora >15s a renderizar.
         // Timeout 15s → 30s antes de cair no fallback CloakBrowser.
@@ -341,10 +348,10 @@ server.tool("browser_browse", "Navega para qualquer URL e extrai conteúdo (mark
     });
     let result = d;
     if (!d || d.ok === false) {
-      // fallback: CloakBrowser (stealth, sem bridge)
+      // fallback final: CloakBrowser (stealth, sem bridge nem camofox)
       const stealth = await scrapeStealth(url);
       if (stealth.ok) result = { ...stealth, fallback: "cloakbrowser" };
-      else result = { ok: false, error: "web.read falhou e CloakBrowser também", detail: stealth.error };
+      else result = { ok: false, error: "camofox, web.read e CloakBrowser falharam", detail: stealth.error };
     }
     try {
       const meta = Array.isArray(result) ? result[0] : result;
@@ -578,6 +585,95 @@ async def main():
     print(json.dumps({"ok": True, "url": ${JSON.stringify(url)}, "title": title, "len": len(html), "html": html[:${maxBytes}]}))
 asyncio.run(main())
 `;
+// ---- CAMOFOX (09-Set, v1.5.0): tier 1 da chain — stealth+auth headless ----
+// Cookies do Chrome importados (~/bin/chrome2camofox.py, 260 domínios) → navega
+// autenticado SEM o bridge Chrome (que acumula 4GB+ ao fim de dias). Auto-start
+// on demand; idle-shutdown interno devolve a RAM. 0MB entre tarefas.
+function camofoxHeaders() {
+  const key = process.env.CAMOFOX_ACCESS_KEY || "";
+  return { "Content-Type": "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) };
+}
+async function camofoxHealth() {
+  try {
+    const r = await fetch(CFG.camofoxUrl + "/health", { signal: AbortSignal.timeout(2000) });
+    return r.ok;
+  } catch { return false; }
+}
+async function camofoxEnsure() {
+  if (await camofoxHealth()) return true;
+  try {
+    const { spawn } = require("child_process");
+    const child = spawn("npm", ["start"], {
+      cwd: CFG.camofoxDir,
+      env: { ...process.env, CAMOFOX_CRASH_REPORT_ENABLED: "false", CAMOFOX_BIND_HOST: "127.0.0.1" },
+      detached: true, stdio: "ignore",
+    });
+    child.unref();
+    for (let i = 0; i < 25; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      if (await camofoxHealth()) return true;
+    }
+  } catch {}
+  return false;
+}
+async function camofoxTab(url, { wait = 10000, dismissConsent = true } = {}) {
+  const H = camofoxHeaders();
+  const mk = (m, p, b) => fetch(CFG.camofoxUrl + p, { method: m, headers: H,
+    body: b ? JSON.stringify(b) : undefined, signal: AbortSignal.timeout(60000) }).then(r => r.json());
+  const r = await mk("POST", "/tabs", { userId: CFG.camofoxUser, sessionKey: "mcp-" + Date.now(), url });
+  const tab = r.tabId;
+  if (!tab) throw new Error("camofox: sem tabId (" + JSON.stringify(r).slice(0, 120) + ")");
+  await mk("POST", `/tabs/${tab}/wait`, { userId: CFG.camofoxUser, timeout: wait, waitForNetwork: true, dismissConsent }).catch(() => {});
+  const close = () => mk("DELETE", `/tabs/${tab}?userId=${CFG.camofoxUser}`).catch(() => {});
+  return { tab, mk, close };
+}
+async function camofoxBrowse(url) {
+  if (!(await camofoxEnsure())) return { ok: false, error: "camofox indisponível" };
+  try {
+    const { tab, mk, close } = await camofoxTab(url);
+    const snap = (await mk("GET", `/tabs/${tab}/snapshot?userId=${CFG.camofoxUser}`)).snapshot || "";
+    await close();
+    return { ok: true, url, engine: "camofox", content: snap.slice(0, CFG.camofoxMaxBytes), content_len: snap.length };
+  } catch (e) { return { ok: false, error: String(e.message || e).slice(0, 200) }; }
+}
+async function camofoxHtml(url) {
+  if (!(await camofoxEnsure())) return { ok: false, error: "camofox indisponível" };
+  try {
+    const { tab, mk, close } = await camofoxTab(url);
+    const r = await mk("POST", `/tabs/${tab}/evaluate`, { userId: CFG.camofoxUser,
+      expression: `(() => document.documentElement.outerHTML)()` });
+    await close();
+    const html = r.result || "";
+    if (!html) return { ok: false, error: "camofox: evaluate vazio" };
+    return { ok: true, url, engine: "camofox", html: String(html).slice(0, CFG.camofoxMaxBytes), html_len: String(html).length };
+  } catch (e) { return { ok: false, error: String(e.message || e).slice(0, 200) }; }
+}
+async function camofoxSearch(query, num = 10) {
+  if (!(await camofoxEnsure())) return { ok: false, error: "camofox indisponível" };
+  try {
+    const { tab, mk, close } = await camofoxTab(`https://www.google.com/search?q=${encodeURIComponent(query)}&num=${num}`);
+    const snap = (await mk("GET", `/tabs/${tab}/snapshot?userId=${CFG.camofoxUser}`)).snapshot || "";
+    await close();
+    if (snap.includes("google.com/sorry") || snap.includes("unusual traffic"))
+      return { ok: false, error: "google rate-limit (/sorry/) — reduzir volume ou aguardar" };
+    const results = [];
+    for (const b of snap.split(/(?=- link )/)) {
+      const t = b.match(/- link "([^"]{5,120})" \[e\d+\]:\s*\n\s*- \/url: (https?:\/\/[^\s]+)/);
+      if (!t) continue;
+      // v1.5.1 fix: sessão autenticada devolve URLs via wrapper google.com/goto (302
+      // p/ destino) — NÃO filtrar por "google." ou perde-se TUDO. Filtrar só a própria SERP.
+      if (/google\.[a-z.]+\/search|accounts\.google|policies\.google/.test(t[2])) continue;
+      results.push({
+        title: t[1], url: t[2],
+        cite: (b.match(/- cite: ([^\n]+)/) || [])[1] || "",
+        snippet: (b.match(/- text: ([^\n]+)/) || [])[1] || "",
+        // cite contém o domínio real (ex: "altmansolon.com › ...") — útil c/ wrapper goto
+      });
+    }
+    return { ok: true, query, engine: "camofox", n: results.length, results: results.slice(0, num) };
+  } catch (e) { return { ok: false, error: String(e.message || e).slice(0, 200) }; }
+}
+
 async function scrapeStealth(url) {
   try {
     const out = execFileSync(CFG.cloakPython, ["-c", CLOAK_SCRIPT(url, CFG.cloakMaxBytes)], {
@@ -591,10 +687,21 @@ async function scrapeStealth(url) {
     return { ok: false, error: msg.slice(0, 200) };
   }
 }
-server.tool("scrape_stealth", "Scraping stealth via CloakBrowser — passa Cloudflare/anti-bot que o curl/opencli falham (403). Devolve HTML renderizado completo.",
+server.tool("scrape_stealth", "Scraping stealth — CHAIN v1.5.0: camofox (anti-detection C++, cookies autenticados) → CloakBrowser (stealth legado). Passa Cloudflare/anti-bot que o curl/opencli falham (403).",
   { url: z.string().describe("URL completo") },
   async ({ url }) => {
-    const d = await scrapeStealth(url);
+    let d = await camofoxHtml(url);
+    if (!d.ok) {
+      d = await scrapeStealth(url);
+      if (d.ok) d.fallback = "cloakbrowser";
+    }
+    return { content: [{ type: "text", text: JSON.stringify(d) }] };
+  });
+
+server.tool("camofox_search", "Google search MASSIVO via camofox (v1.5.0) — SERP estruturado (título+cite+snippet), stealth+autenticado (cookies do Chrome). Substitui o caso searxng. Devolve /sorry/ se rate-limit.",
+  { query: z.string().describe("Query de pesquisa"), num: z.number().optional().describe("Nº de resultados (default 10)") },
+  async ({ query, num }) => {
+    const d = await camofoxSearch(query, num || 10);
     return { content: [{ type: "text", text: JSON.stringify(d) }] };
   });
 
@@ -821,4 +928,9 @@ if (_origCallTool) {
     }
   };
 }
-main().catch((e) => { console.error("[super-browser-mcp] fatal:", e.message); process.exit(1); });
+// v1.5.0: CAMOFOX_TEST exporta os internals da chain p/ testes sem arrancar o server stdio
+if (process.env.CAMOFOX_TEST) {
+  module.exports = { camofoxHealth, camofoxEnsure, camofoxBrowse, camofoxHtml, camofoxSearch, scrapeStealth, camofoxTab };
+} else {
+  main().catch((e) => { console.error("[super-browser-mcp] fatal:", e.message); process.exit(1); });
+}
