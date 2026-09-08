@@ -251,14 +251,34 @@ server.tool("site_search", "Pesquisa num site específico via opencli (adapter).
   });
 
 // ---- Finance / Trading (subskill trading-search) ----
+// camofoxQuote (v1.5.3): cotação barchart via camofox — 7.5s vs 21.6s opencli (medido)
+async function camofoxQuote(sym) {
+  if (!(await camofoxEnsure())) return { ok: false, camofox_skip: true };
+  try {
+    const { tab, mk, close } = await camofoxTab("https://www.barchart.com/stocks/quotes/" + sym, { wait: 12000, dismissConsent: true });
+    const symJ = JSON.stringify(sym);
+    const expr = "(() => { const el = document.querySelector('span[data-last-normal-market-timestamp], .last-price, .symbol-last-price'); const t = document.title; const nm = t.replace(/ - Barchart.com.*$/, '').trim(); return { name: (nm && nm.toLowerCase().indexOf(" + sym.toLowerCase() + ") === -1 ? nm : " + symJ + "), price: el ? el.textContent.trim() : '' }; })()";
+    const r = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
+    await close();
+    const res = r.result || {};
+    if (!res.price) return { ok: false, camofox_skip: true, error: "sem preço no page" };
+    return { ok: true, engine: "camofox", name: res.name, price: res.price, symbol: sym };
+  } catch (e) { return { ok: false, camofox_skip: true, error: String(e.message || e).slice(0, 120) }; }
+}
+
 server.tool("finance_quote", "Cotações e dados de ações (barchart). Suporta BATCH: symbols separados por vírgula (ex: NVDA,AAPL,MSFT) — devolve array.",
   { symbol: z.string().describe("Ticker(s) separados por vírgula (ex: NVDA ou NVDA,AAPL,MSFT)") },
   async ({ symbol }) => {
     const symbols = symbol.split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
     if (symbols.length === 0) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "sem símbolos" }) }] };
-    // cache TTL 60s: o barchart via opencli é lento (~2-9s); cache elimina o spawn.
-    // BATCH (melhoria #3 15-Ago): 1 spawn por symbol (paralelo), cache partilhada.
-    const results = await Promise.all(symbols.map(sym => cachedOc(`quote:${sym}`, ["barchart", "quote", sym])));
+    // v1.5.3: CAMOFOX primeiro (7.5s medido vs 21.6s opencli — mesmo preço);
+    // fallback opencli bridge se camofox indisponível/falhar. Cache 60s.
+    const results = await Promise.all(symbols.map(sym => cached("quote:" + sym, null, async () => {
+      const cf = await camofoxQuote(sym);
+      if (cf.ok) return [cf];
+      try { return await cachedOc("quote:" + sym, ["barchart", "quote", sym]); }
+      catch { return [{ ok: false, error: "quote falhou (camofox + opencli)" }]; }
+    })));
     const all = results.flatMap(d => (Array.isArray(d) ? d : [d]));
     // P1 fix (feedback T1 15-Ago): o adapter barchart devolve marketCap em MILHARES
     // (NVDA 5,448,872,320 = $5.4T). Normalizar ×1000 → dólares, em todas as posições.
@@ -794,6 +814,32 @@ server.tool("camofox_search", "Google search MASSIVO via camofox (v1.5.0) — SE
     return { content: [{ type: "text", text: JSON.stringify(d) }] };
   });
 
+// camofox_auth_status (v1.5.3): audita as sessões do CAMOFOX (cookies importados
+// do Chrome via chrome2camofox.py) — sem abrir browser. Complementa auth_status
+// (que audita o bridge Chrome). Mesma forma de output (items por domínio).
+server.tool("camofox_auth_status", "Estado de autenticação da sessão camofox (cookies do Chrome importados) — por domínio, sem abrir browser. Complementa auth_status (bridge).",
+  { },
+  async () => {
+    try {
+      const hash = require("crypto").createHash("sha256").update(CFG.camofoxUser).digest("hex").slice(0, 32);
+      const sp = path.join(os.homedir(), ".camofox/profiles", hash, "storage-state.json");
+      const st = JSON.parse(fs.readFileSync(sp, "utf8"));
+      const LOGIN_COOKIES = /^(SID|HSID|SSID|SAPISID|__Secure-1PSID|li_at|auth_token|sessionid|ds_user_id|x-main|c_user|xs|session-id)$/i;
+      const by = {};
+      for (const c of (st.cookies || [])) {
+        const d = (c.domain || "").replace(/^\./, "");
+        const key = d.split(".").slice(-2).join(".");
+        by[key] = by[key] || { site: key, cookies: 0, logged_in_hint: false, sessao: [] };
+        by[key].cookies++;
+        if (LOGIN_COOKIES.test(c.name)) { by[key].sessao.push(c.name); by[key].logged_in_hint = true; }
+      }
+      const items = Object.values(by).sort((a, b) => b.cookies - a.cookies);
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, engine: "camofox", total: items.length, items }) }] };
+    } catch (e) {
+      return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: String(e.message || e).slice(0, 120) + " (correr chrome2camofox.py primeiro?)" }) }] };
+    }
+  });
+
 // ---- Web search: Google (opencli) — searxng REMOVIDO (16-Ago) ----
 // Decisão [VERIFICADO telemetria 48h]: google COOKIE dá 100% dos sucessos; o fallback
 // searxng devolveu 0 resultados em 48h (18 falhas todas "engines suspensas/rate-limit")
@@ -803,7 +849,15 @@ server.tool("web_search", "Pesquisa web: Google (opencli, autenticado). Devolve 
   { query: z.string().describe("Query"), limit: z.number().optional() },
   async ({ query, limit = 5 }) => {
     // Cache 60s por query: queries repetidas (news/check diário) não re-abrem o Chrome.
-    const cachedRes = await cached(`web:${query}:${limit}`, null, () => {
+    const cachedRes = await cached("web:" + query + ":" + limit, null, async () => {
+      // v1.5.3: CAMOFOX PRIMEIRO (stealth+auth, sem bridge) — opencli google é o
+      // fallback (rate-limit /sorry/ ou falha). Mesma normalização title/url/snippet.
+      try {
+        const cf = await camofoxSearch(query, limit);
+        if (cf.ok && cf.results && cf.results.length > 0) {
+          return { engine: "camofox", results: cf.results.map(r => ({ title: r.title || "", url: r.url || "", snippet: (r.snippet || "").slice(0, 200) })) };
+        }
+      } catch { /* fallback opencli */ }
       // RETRY com query simplificada (16-Ago, erro observado): queries compostas
       // (ex "Ukraine Russia war news August 16 2026 Moscow drones Wildberries")
       // podem dar vazio no google — a 2ª tentativa remove palavras-chave genéricas
