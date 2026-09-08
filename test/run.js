@@ -50,7 +50,7 @@ async function main(){
   // 3. fluxo stateful browser
   const flow = [
     ['browser_act', {action:'open', args:{url:'https://duckduckgo.com'}}],
-    ['browser_act', {action:'fill', args:{target:'input[name="q"]', text:'super-browser-mcp'}}],
+    ['browser_act', {action:'fill', args:{target:'textarea[name="q"]', text:'super-browser-mcp'}}],
     ['browser_act', {action:'keys', args:{key:'Enter'}}],
   ];
   let flowOk = true;

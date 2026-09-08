@@ -463,6 +463,13 @@ server.tool("browser_act", `Executa uma ação de automação browser no Chrome 
       return { content: [{ type: "text", text: JSON.stringify(out) }] };
     }
     try {
+      // v1.5.1: ENGINE camofox PRIMEIRO — stealth+auth, selector CSS nativo,
+      // sem bridge Chrome (4 dependências → 1). Se camofox falhar/skip →
+      // cai no opencli (bridge) exactamente como antes. Compat total.
+      if (!windowMode) {
+        const cf = await camofoxAct(action, args, session);
+        if (cf && cf.ok) return { content: [{ type: "text", text: JSON.stringify(cf) }] };
+      }
       // GESTÃO DE RECURSOS NATIVA (regra user 15-Ago): limite de tabs por sessão (LRU).
       // Ao abrir tab, se exceder maxTabs, fechar a mais antiga — nunca acumular.
       // REGRA MASTER (user 20:10): a tab master (index 0 = tab de SESSÃO que mantém a
@@ -672,6 +679,88 @@ async function camofoxSearch(query, num = 10) {
     }
     return { ok: true, query, engine: "camofox", n: results.length, results: results.slice(0, num) };
   } catch (e) { return { ok: false, error: String(e.message || e).slice(0, 200) }; }
+}
+
+// camofoxAct (v1.5.1): browser_act via camofox — stateful (open→fill→click na
+// MESMA página via sessionKey fixo), selector CSS nativo, sem bridge Chrome.
+// Ações não suportadas devolvem camofox_skip → handler cai no opencli (bridge).
+const CAMOFOX_STATEFUL = {};
+async function camofoxAct(action, args = {}, session = "mcp-main") {
+  if (!(await camofoxEnsure())) return { ok: false, camofox_skip: true, error: "camofox indisponível" };
+  try {
+    const H = camofoxHeaders();
+    const mk = (m, p, b) => fetch(CFG.camofoxUrl + p, { method: m, headers: H,
+      body: b ? JSON.stringify(b) : undefined, signal: AbortSignal.timeout(60000) }).then(r => r.json());
+    const sessKey = "s-" + session;
+    const listTabs = async () => (await mk("GET", `/tabs?userId=${CFG.camofoxUser}`)).tabs || [];
+    let tid = CAMOFOX_STATEFUL[sessKey];
+    if (tid && !(await listTabs()).some(t => t.tabId === tid)) { tid = null; CAMOFOX_STATEFUL[sessKey] = null; }
+    switch (action) {
+      case "open": {
+        const r = await mk("POST", "/tabs", { userId: CFG.camofoxUser, sessionKey: sessKey, url: args.url || "about:blank" });
+        CAMOFOX_STATEFUL[sessKey] = r.tabId;
+        // v1.5.1 fix: esperar rede idle + dismiss consent — sem isto o fill
+        // corre contra a página ainda a redesenhar ("Page changed during type")
+        await mk("POST", `/tabs/${r.tabId}/wait`, { userId: CFG.camofoxUser, timeout: 8000, waitForNetwork: true, dismissConsent: true }).catch(() => {});
+        return { ok: true, engine: "camofox", tabId: r.tabId, url: r.url };
+      }
+      case "state": case "extract": case "get": {
+        if (!tid) return { ok: false, error: "sem tab aberta (open primeiro)" };
+        const r = await mk("GET", `/tabs/${tid}/snapshot?userId=${CFG.camofoxUser}`);
+        const snap = (r.snapshot || "").slice(0, CFG.camofoxMaxBytes);
+        // v1.5.1: total_chars preservado (contrato do extract antigo — consumidores dependem)
+        return { ok: true, engine: "camofox", snapshot: snap, total_chars: r.snapshot ? r.snapshot.length : 0 };
+      }
+      case "click": {
+        if (!tid) return { ok: false, error: "sem tab aberta" };
+        const b = { userId: CFG.camofoxUser }; if (args.target) b.selector = args.target; if (args.ref) b.ref = args.ref;
+        return { ok: true, engine: "camofox", ...(await mk("POST", `/tabs/${tid}/click`, b)) };
+      }
+      case "type": case "fill": {
+        if (!tid) return { ok: false, error: "sem tab aberta" };
+        const b = { userId: CFG.camofoxUser, text: args.text, mode: "fill" };
+        if (args.target) b.selector = args.target; if (args.ref) b.ref = args.ref;
+        if (args.pressEnter) b.pressEnter = true;
+        let r = await mk("POST", `/tabs/${tid}/type`, b);
+        // v1.5.1 fix: "Page changed during type" = página redesenhou a meio —
+        // snapshot para estabilizar + 1 retry (Playwright auto-wait cobre o resto)
+        if ((r.error || "").includes("Page changed")) {
+          await mk("GET", `/tabs/${tid}/snapshot?userId=${CFG.camofoxUser}`).catch(() => {});
+          r = await mk("POST", `/tabs/${tid}/type`, b);
+        }
+        return { ok: true, engine: "camofox", ...(r) };
+      }
+      case "eval": {
+        if (!tid) return { ok: false, error: "sem tab aberta" };
+        const r = await mk("POST", `/tabs/${tid}/evaluate`, { userId: CFG.camofoxUser, expression: args.js });
+        return { ok: true, engine: "camofox", result: r.result };
+      }
+      case "keys":
+        if (!tid) return { ok: false, error: "sem tab aberta" };
+        return { ok: true, engine: "camofox", ...(await mk("POST", `/tabs/${tid}/press`, { userId: CFG.camofoxUser, key: args.key })) };
+      case "scroll":
+        if (!tid) return { ok: false, error: "sem tab aberta" };
+        return { ok: true, engine: "camofox", ...(await mk("POST", `/tabs/${tid}/scroll`, { userId: CFG.camofoxUser, direction: args.direction || "down" })) };
+      case "wait":
+        if (!tid) return { ok: true, engine: "camofox" };
+        return { ok: true, engine: "camofox", ...(await mk("POST", `/tabs/${tid}/wait`, { userId: CFG.camofoxUser, timeout: Number(args.value) || 5000 })) };
+      case "screenshot": {
+        if (!tid) return { ok: false, error: "sem tab aberta" };
+        const r = await fetch(`${CFG.camofoxUrl}/tabs/${tid}/screenshot?userId=${CFG.camofoxUser}`, { headers: H, signal: AbortSignal.timeout(30000) }).then(x => x.json());
+        return { ok: true, engine: "camofox", screenshot: (r.screenshot || r.base64 || "").slice(0, 100000) };
+      }
+      case "back": case "forward": case "refresh":
+        if (!tid) return { ok: false, error: "sem tab aberta" };
+        return { ok: true, engine: "camofox", ...(await mk("POST", `/tabs/${tid}/${action}`, { userId: CFG.camofoxUser })) };
+      case "close":
+        if (tid) { await mk("DELETE", `/tabs/${tid}?userId=${CFG.camofoxUser}`); CAMOFOX_STATEFUL[sessKey] = null; }
+        return { ok: true, engine: "camofox" };
+      default:
+        return { ok: false, camofox_skip: true };
+    }
+  } catch (e) {
+    return { ok: false, error: String(e.message || e).slice(0, 200), camofox_skip: true };
+  }
 }
 
 async function scrapeStealth(url) {
@@ -930,7 +1019,7 @@ if (_origCallTool) {
 }
 // v1.5.0: CAMOFOX_TEST exporta os internals da chain p/ testes sem arrancar o server stdio
 if (process.env.CAMOFOX_TEST) {
-  module.exports = { camofoxHealth, camofoxEnsure, camofoxBrowse, camofoxHtml, camofoxSearch, scrapeStealth, camofoxTab };
+  module.exports = { camofoxHealth, camofoxEnsure, camofoxBrowse, camofoxHtml, camofoxSearch, scrapeStealth, camofoxTab, camofoxAct };
 } else {
   main().catch((e) => { console.error("[super-browser-mcp] fatal:", e.message); process.exit(1); });
 }
