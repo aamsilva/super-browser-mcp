@@ -207,6 +207,12 @@ function normalizeDefi(raw, limit) {
 server.tool("site_search", "Pesquisa num site específico via opencli (adapter). Sites: youtube (search/feed/history/subscriptions/transcript), twitter (trending/timeline/search/bookmarks), google (news/search/trends), reddit (hot/search), bbc (news), hackernews (top/best), defillama (protocols/protocol), linkedin (inbox/posts/people-search). Uso: site + comando + query. Para comandos POSICIONAIS (defillama protocol <slug>, youtube transcript <url>) usar arg (não query).",
   { site: z.string().describe("Site (ex: youtube, twitter, google, reddit, bbc, hackernews, defillama, linkedin, github, barchart)"), command: z.string().describe("Comando do site (ex: search, trending, timeline, news, top, protocol, transcript, inbox, repos, prs, issues, releases)"), query: z.string().optional().describe("Query (para comandos de search)"), arg: z.string().optional().describe("Argumento posicional para comandos como protocol/transcript (ex: slug, URL de video)"), limit: z.number().optional(), fresh: z.number().optional().describe("Filtro de frescura (P3-6, feedback T2): só resultados com date <= N dias de idade. Aplica a google news.") },
   async ({ site, command, query, arg, limit = 5, fresh }) => {
+    // v1.5.5: fast-fail — sites cujos adapters usam o bridge browser (Chrome morto
+    // = 91s pendurado em BROWSER_CONNECT). Sites API-only (google/defillama) passam.
+    const BROWSER_SITES = new Set(["twitter", "amazon", "instagram", "facebook", "linkedin", "barchart"]);
+    if (BROWSER_SITES.has(site) && !bridgeAlive()) {
+      return { content: [{ type: "text", text: JSON.stringify({ ok: false, bridge_down: true, site, hint: "Adapter usa o bridge Chrome (morto). Reabrir: opencli browser main open <url>." }) }] };
+    }
     const args = [site, command];
     if (arg) args.push(arg);
     else if (query) args.push(query);
@@ -334,6 +340,11 @@ server.tool("finance_defi", "Top DeFi por TVL (defillama).",
 server.tool("social_sentiment", "Sentimento social de um ticker (X/Twitter autenticado).",
   { query: z.string().describe("Query (ex: NVDA OR NVIDIA)"), limit: z.number().optional() },
   async ({ query, limit = 5 }) => {
+    // v1.5.5: fast-fail — o twitter search usa o bridge browser (Chrome morto
+    // = 182s pendurado). Responder imediato.
+    if (!bridgeAlive()) {
+      return { content: [{ type: "text", text: JSON.stringify({ ok: false, bridge_down: true, hint: "Chrome não corre; social_sentiment usa o bridge. Reabrir: opencli browser main open <url>." }) }] };
+    }
     // P2-3 fix (feedback T2 15-Ago): connection closed intermitente no 1º try (~1/5) —
     // retry 1x antes de falhar.
     let d;
@@ -858,6 +869,9 @@ server.tool("web_search", "Pesquisa web: Google (opencli, autenticado). Devolve 
           return { engine: "camofox", results: cf.results.map(r => ({ title: r.title || "", url: r.url || "", snippet: (r.snippet || "").slice(0, 200) })) };
         }
       } catch { /* fallback opencli */ }
+      // v1.5.5: fallback opencli SÓ se o bridge estiver vivo (Chrome morto → não
+      // pendurar 45-90s; devolver o erro do camofox imediatamente).
+      if (!bridgeAlive()) return { ok: false, degraded: true, bridge_down: true, error: "camofox sem resultados e Chrome bridge morto", engine: "camofox" };
       // RETRY com query simplificada (16-Ago, erro observado): queries compostas
       // (ex "Ukraine Russia war news August 16 2026 Moscow drones Wildberries")
       // podem dar vazio no google — a 2ª tentativa remove palavras-chave genéricas
