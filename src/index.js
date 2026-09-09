@@ -310,6 +310,8 @@ server.tool("finance_quote", "Cotações e dados de ações (barchart). Suporta 
     const results = await Promise.all(symbols.map(sym => cached("quote:" + sym, null, async () => {
       const cf = await camofoxQuote(sym);
       if (cf.ok) return [cf];
+      // v1.5.10: fallback opencli SÓ com bridge vivo (evita 91s BROWSER_CONNECT)
+      if (!bridgeAlive()) return [{ ok: false, error: "camofox sem preço e Chrome bridge morto", bridge_down: true }];
       try { return await cachedOc("quote:" + sym, ["barchart", "quote", sym]); }
       catch { return [{ ok: false, error: "quote falhou (camofox + opencli)" }]; }
     })));
@@ -435,6 +437,29 @@ function linkedInUrl(kind, query) {
   if (kind === "posts") return "https://www.linkedin.com/search/results/content/?keywords=" + q;
   if (kind === "inbox") return "https://www.linkedin.com/messaging/";
   return "https://www.linkedin.com/feed/";
+}
+
+// camofoxTrending (v1.5.10): X trending via camofox — o MESMO engine do
+// social_sentiment (polling 6×2s + reload) porque o X SPA é flappy em fetch
+// standalone (o trending do news-intel vinha VAZIO intermitentemente).
+async function camofoxTrending(limit = 10) {
+  if (!(await camofoxEnsure())) return { ok: false, camofox_skip: true };
+  try {
+    const { tab, mk, close } = await camofoxTab("https://x.com/explore/tabs/trending", { wait: 9000, dismissConsent: true });
+    const limJ = JSON.stringify(limit || 10);
+    const expr = "(() => { const t = [...document.querySelectorAll('[data-testid=\"trend\"]')].slice(0," + limJ + ").map(el => { const lin = (el.innerText||'').split('\n').map(s=>s.trim()).filter(Boolean); return { topico: (lin[0]||'').slice(0,60), categoria: (lin.find(l => l.includes('Trending')) || lin[2] || '').slice(0,60), posts: (lin[1]||'').slice(0,20) }; }); return { logado: !!document.querySelector('[data-testid=\"SideNav_AccountSwitcher_Button\"]'), err: document.body.innerText.includes('Something went wrong'), items: t.filter(x => x.topico) }; })()";
+    let res = {};
+    for (let i = 0; i < 6; i++) {
+      const r = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
+      res = r.result || {};
+      if (res.items && res.items.length > 0) break;
+      if (res.err) { await mk("POST", "/tabs/" + tab + "/navigate", { userId: CFG.camofoxUser, url: "https://x.com/explore/tabs/trending" }); await mk("POST", "/tabs/" + tab + "/wait", { userId: CFG.camofoxUser, timeout: 8000 }).catch(() => {}); }
+      await new Promise(r2 => setTimeout(r2, 2000));
+    }
+    await close();
+    if (!res.logado) return { ok: false, camofox_skip: true, error: "x.com não autenticado" };
+    return { ok: true, engine: "camofox", n: (res.items || []).length, items: res.items || [] };
+  } catch (e) { return { ok: false, camofox_skip: true, error: String(e.message || e).slice(0, 120) }; }
 }
 
 server.tool("social_sentiment", "Sentimento social de um ticker (X/Twitter autenticado).",
@@ -927,7 +952,9 @@ async function scrapeStealth(url) {
     const html = d.html || "";
     return { ok: true, title: d.title, len: d.len, url: d.url, html, html_len: html.length };
     } catch (e) {
-      const msg = (e.stdout || e.stderr || e.message || "").toString().trim();
+      let msg = (e.stdout || e.stderr || e.message || "").toString().trim();
+      // v1.5.10: limpar notices de update (pip/npm) que poluem o erro real
+      msg = msg.split("\n").filter(l => !/Update available|Run: (pip|npm) install/i.test(l)).join("\n").trim();
     return { ok: false, error: msg.slice(0, 200) };
   }
 }
@@ -1237,7 +1264,7 @@ if (_origCallTool) {
 }
 // v1.5.0: CAMOFOX_TEST exporta os internals da chain p/ testes sem arrancar o server stdio
 if (process.env.CAMOFOX_TEST) {
-  module.exports = { camofoxHealth, camofoxEnsure, camofoxBrowse, camofoxHtml, camofoxSearch, scrapeStealth, camofoxTab, camofoxAct, camofoxSentiment, camofoxLinkedIn };
+  module.exports = { camofoxHealth, camofoxEnsure, camofoxBrowse, camofoxHtml, camofoxSearch, scrapeStealth, camofoxTab, camofoxAct, camofoxSentiment, camofoxLinkedIn, camofoxTrending };
 } else {
   main().catch((e) => { console.error("[super-browser-mcp] fatal:", e.message); process.exit(1); });
 }
