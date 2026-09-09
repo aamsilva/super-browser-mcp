@@ -935,6 +935,31 @@ async function camofoxAct(action, args = {}, session = "mcp-main") {
       case "close":
         if (tid) { await mk("DELETE", `/tabs/${tid}?userId=${CFG.camofoxUser}`); CAMOFOX_STATEFUL[sessKey] = null; }
         return { ok: true, engine: "camofox" };
+      case "upload": {
+        // v1.5.12: upload via camofox (POST /tabs/:id/upload; path + selector/ref)
+        if (!tid) return { ok: false, error: "sem tab aberta" };
+        const b = { userId: CFG.camofoxUser, path: args.path || args.file || (Array.isArray(args.files) ? args.files[0] : undefined) };
+        if (!b.path) return { ok: false, error: "upload precisa de path/file" };
+        if (args.target) b.selector = args.target; if (args.ref) b.ref = args.ref;
+        return { ok: true, engine: "camofox", ...(await mk("POST", `/tabs/${tid}/upload`, b)) };
+      }
+      case "tab": {
+        if (args.action === "list") return { ok: true, engine: "camofox", tabs: await listTabs() };
+        if (args.action === "new") {
+          // v1.5.12: tab new via camofox — o MAX_TABS_PER_SESSION é enforce no server
+          const r = await mk("POST", "/tabs", { userId: CFG.camofoxUser, sessionKey: sessKey, url: args.url || "https://example.com" });
+          CAMOFOX_STATEFUL[sessKey] = r.tabId;
+          return { ok: true, engine: "camofox", tabId: r.tabId, url: r.url };
+        }
+        if (args.action === "close") {
+          // close por index (compat opencli): mapeia index → tabId da lista
+          const tabs = await listTabs();
+          const t = tabs[Number(args.index) || 0];
+          if (t) { await mk("DELETE", `/tabs/${t.tabId}?userId=${CFG.camofoxUser}`); if (tid === t.tabId) CAMOFOX_STATEFUL[sessKey] = null; }
+          return { ok: true, engine: "camofox", closed: t ? t.tabId : null };
+        }
+        return { ok: false, camofox_skip: true };
+      }
       default:
         return { ok: false, camofox_skip: true };
     }
