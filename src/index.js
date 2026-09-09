@@ -210,11 +210,22 @@ server.tool("site_search", "Pesquisa num site específico via opencli (adapter).
     // v1.5.7: twitter search via CAMOFOX primeiro (x.com autenticado; o bridge
     // dava 91s BROWSER_CONNECT com Chrome morto) — fallback opencli abaixo.
     // v1.5.8: linkedin people/posts/inbox → camofox (li_at authed, padrão provado)
+    // v1.5.9: TIMELINE → camofox posts-search (fecha o AUTH_REQUIRED exit 77 do
+    // opencli — binding de sessão; o content-search entrega o valor do lead-scout)
     if (site === "linkedin") {
-      const kind = command === "posts" ? "posts" : command === "inbox" ? "inbox" : "people";
-      const cl = await camofoxLinkedIn(kind, query || "", limit || 5);
+      const kind = command === "posts" || command === "timeline" ? "posts"
+                 : command === "inbox" ? "inbox" : "people";
+      const cl = await camofoxLinkedIn(kind, query || "telecom AI", limit || 5);
       if (cl.ok && cl.items && cl.items.length > 0) {
         return { content: [{ type: "text", text: JSON.stringify({ engine: "camofox", kind: cl.kind, n: cl.n, results: cl.items }) }] };
+      }
+      // timeline com query vazia → feed pode ser esparso em sessão fresca; tentar
+      // content-search genérico antes de cair no opencli (AUTH_REQUIRED)
+      if (cl.ok && cl.kind === "posts" && cl.n === 0) {
+        const cl2 = await camofoxLinkedIn("posts", "telecom OR technology", limit || 5);
+        if (cl2.ok && cl2.items && cl2.items.length > 0) {
+          return { content: [{ type: "text", text: JSON.stringify({ engine: "camofox", kind: "posts", n: cl2.n, results: cl2.items, fallback_query: true }) }] };
+        }
       }
     }
     if (site === "twitter" && command === "search" && query) {
@@ -402,8 +413,9 @@ async function camofoxLinkedIn(kind, query, limit = 5) {
     } else if (kind === "inbox") {
       expr = "(() => { const ms = [...document.querySelectorAll('li.msg-conversation-listitem')].slice(0," + limJ + ").map(e => { const l = (e.innerText||'').split('\\n').map(s=>s.trim()).filter(Boolean); return { contacto: l[1] || l[0] || '', quando: l[2] || '', preview: l.slice(4).join(' ').slice(0,140) }; }); return { items: ms }; })()";
     } else {
-      // posts: blocos de texto do body (author • time + conteúdo)
-      expr = "(() => { const parts = document.body.innerText.split('\\n\\n').filter(b => b.includes('• ') && b.length > 80).slice(0," + limJ + ").map(b => b.replace(/\\n/g,' | ').slice(0,300)); return { items: parts }; })()";
+      // v1.5.9 fix: o marcador de tempo ("15h • ") fica em BLOCO SEPARADO do texto
+      // do post — filtrar por junk-prefix + length em vez de exigir '• ' no bloco
+      expr = "(() => { const junk = /^(\\d+ notifications|Skip to|Home$|My Network$|Jobs$|Messaging$|Notifications$|Me$|Business$|Advertise$|Repost$|Like$|Comment$|Send$|Filters$|Sort by$|Show more|Ver mais|My Items$|Data Privacy$|Learning$|Talent$|Sales$|Search messages|Jump to|Get started|Profile viewers|Help a friend)/i; const blocks = document.body.innerText.split('\\n\\n').filter(b => { const t = b.trim(); return t.length > 80 && !junk.test(t.slice(0,30)); }).slice(0," + limJ + ").map(b => b.replace(/\\n/g,' | ').slice(0,300)); return { items: blocks }; })()";
     }
     // polling: SPA do linkedin renderiza depois da rede idle (4×2s)
     let res = {};
