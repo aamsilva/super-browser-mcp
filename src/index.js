@@ -568,7 +568,9 @@ const KNOWN_SESSIONS = new Set([DEFAULT_SESSION]);
 function browserExec(action, args, session, windowMode) {
   const cmd = [action];
   for (const [k, v] of Object.entries(args || {})) {
-    if (v === undefined || v === null || v === "") continue;
+    // v1.5.15 fix: session/window são params do browser_act (não flags CLI) —
+    // o caller que os passava dentro de args gerava "unknown option --session"
+    if (k === "session" || k === "window" || v === undefined || v === null || v === "") continue;
     // tab: sub-comando posicional (tab new <url>, tab list, tab close <targetId>)
     if (action === "tab" && (k === "action" || k === "url")) { cmd.push(String(v)); continue; }
     if (POS_ARGS.has(k)) cmd.push(String(v));
@@ -861,7 +863,20 @@ async function camofoxSearch(query, num = 10) {
     await close();
     if (snap.includes("google.com/sorry") || snap.includes("unusual traffic"))
       return { ok: false, error: "google rate-limit (/sorry/) — reduzir volume ou aguardar" };
+    // E1 (10-Set): cleaning defensivo no parser MCP — o server já limpa, mas se
+    // servir versão antiga não deixamos títulos "1:44YouTube · ..." ou snippets
+    // vazios chegarem ao consumer. Também resolve o viés-vídeo (F1: 4/6 youtube).
+    const cleanTitle = (s) => s
+      .replace(/^\d{1,2}:\d{2}(?::\d{2})?\s*/, "")
+      .replace(/^(YouTube|Instagram|Facebook|TikTok|X|Twitter)\s*·\s*/i, "")
+      .trim();
+    const baseDomain = (u) => {
+      try { return (new URL(u).hostname.replace(/^www\./, "").match(/([^.]+)\.[^.]+$/) || [])[1] || ""; }
+      catch { return ""; }
+    };
     const results = [];
+    const seenUrl = new Set();
+    const seenDomain = new Map();
     for (const b of snap.split(/(?=- link )/)) {
       const t = b.match(/- link "([^"]{5,120})" \[e\d+\]:\s*\n\s*- \/url: (https?:\/\/[^\s]+)/);
       if (!t) continue;
@@ -869,17 +884,27 @@ async function camofoxSearch(query, num = 10) {
       // p/ destino) — NÃO filtrar por "google." ou perde-se TUDO. Filtrar só a própria SERP.
       if (/google\.[a-z.]+\/search|accounts\.google|policies\.google/.test(t[2])) continue;
       // v1.5.6: descodificar goto → URL directa (qualidade = opencli)
+      const url = decodeGotoUrl(t[2]);
+      if (seenUrl.has(url)) continue;         // dedupe por URL (v1.5.6)
+      // E1 diversidade: máx 2 por domínio-base (corta carousel de vídeos do mesmo site)
+      const dom = baseDomain(url);
+      if ((seenDomain.get(dom) || 0) >= 2) continue;
+      // E1 snippet fallback: se o server não emitiu "- text:", extrai da primeira
+      // linha de descrição rolada no bloco (nunca vazio se o bloco trouxer texto)
+      let snippet = (b.match(/- text: ([^\n]+)/) || [])[1] || "";
+      if (!snippet) {
+        const rest = b.replace(/^- link "[^"]+" \[e\d+\]:\s*\n\s*- \/url: [^\n]+\n?/, "").trim();
+        const lines = rest.split("\n").map(l => l.replace(/^\s*- (cite|text):\s*/, "").trim()).filter(Boolean);
+        snippet = lines.find(l => l.length > 15 && !l.startsWith("http")) || "";
+      }
+      seenUrl.add(url); seenDomain.set(dom, (seenDomain.get(dom) || 0) + 1);
       results.push({
-        title: t[1], url: decodeGotoUrl(t[2]),
+        title: cleanTitle(t[1]), url,
         cite: (b.match(/- cite: ([^\n]+)/) || [])[1] || "",
-        snippet: (b.match(/- text: ([^\n]+)/) || [])[1] || "",
-        // cite contém o domínio real (ex: "altmansolon.com › ...") — útil c/ wrapper goto
+        snippet: (snippet || "").slice(0, 200),
       });
     }
-    // v1.5.6: dedupe por URL (serps com vídeo duplicam thumb+title links)
-    const seen = new Set();
-    const uniq = results.filter(r => !seen.has(r.url) && seen.add(r.url));
-    return { ok: true, query, engine: "camofox", n: uniq.length, results: uniq.slice(0, num) };
+    return { ok: true, query, engine: "camofox", n: results.length, results: results.slice(0, num) };
   } catch (e) { return { ok: false, error: String(e.message || e).slice(0, 200) }; }
 }
 

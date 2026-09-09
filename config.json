@@ -1,88 +1,91 @@
 {
-  "opencli": {
-    "bin": "/opt/homebrew/bin/opencli",
-    "windowAdapters": [
-      "barchart",
-      "twitter",
-      "youtube",
-      "bloomberg",
-      "google",
-      "reddit",
-      "instagram",
-      "facebook"
-    ],
-    "timeoutMs": 90000
-  },
-  "cloak": {
-    "python": "/Volumes/disco1tb/tools/super-browser-mcp/.venv/bin/python3",
-    "maxHtmlBytes": 2000000,
-    "timeoutMs": 90000
-  },
-  "browser": {
-    "defaultSession": "mcp-main",
-    "maxTabs": 30,
-    "autoCloseRead": true
-  },
-  "server": {
-    "root": "/Volumes/disco1tb/tools/super-browser-mcp",
-    "node": "/Users/augustosilva/.opencode/bin/node",
-    "tailscaleIp": "100.74.228.17",
-    "sources": {
-      "127.0.0.1": "local",
-      "100.117.34.80": "vps-ares",
-      "100.74.228.17": "tailscale-macmini"
-    }
-  },
-  "ui": {
-    "toolExamples": {
-      "finance_quote": {
-        "symbol": "NVDA"
-      },
-      "finance_options": {
-        "symbol": "AAPL"
-      },
-      "finance_crypto": {
-        "pair": "BTCUSDT"
-      },
-      "finance_defi": {
-        "limit": 3
-      },
-      "social_sentiment": {
-        "query": "NVDA OR NVIDIA",
-        "limit": 3
-      },
-      "browser_browse": {
-        "url": "https://news.ycombinator.com"
-      },
-      "browser_act": {
-        "action": "open",
-        "args": {
-          "url": "https://news.ycombinator.com"
-        }
-      },
-      "web_search": {
-        "query": "MCP server",
-        "limit": 3
-      },
-      "scrape_stealth": {
-        "url": "https://expresso.pt"
-      },
-      "health": {},
-      "site_search": {
-        "site": "youtube",
-        "command": "search",
-        "query": "MCP",
-        "limit": 2
-      },
-      "auth_check": {
-        "site": "github"
-      },
-      "auth_status": {},
-      "browser_agent": {
-        "action": "open",
-        "url": "https://www.amazon.es/gp/css/order-history",
-        "session": "amazon"
-      }
-    }
+ "opencli": {
+  "bin": "/opt/homebrew/bin/opencli",
+  "windowAdapters": [
+   "barchart",
+   "twitter",
+   "youtube",
+   "bloomberg",
+   "google",
+   "reddit",
+   "instagram",
+   "facebook"
+  ],
+  "timeoutMs": 90000
+ },
+ "cloak": {
+  "python": "/Volumes/disco1tb/tools/super-browser-mcp/.venv/bin/python3",
+  "maxHtmlBytes": 2000000,
+  "timeoutMs": 90000
+ },
+ "browser": {
+  "defaultSession": "mcp-main",
+  "maxTabs": 30,
+  "autoCloseRead": true
+ },
+ "server": {
+  "root": "/Volumes/disco1tb/tools/super-browser-mcp",
+  "node": "/Users/augustosilva/.opencode/bin/node",
+  "tailscaleIp": "100.74.228.17",
+  "sources": {
+   "127.0.0.1": "local",
+   "100.117.34.80": "vps-ares",
+   "100.74.228.17": "tailscale-macmini"
   }
+ },
+ "ui": {
+  "toolExamples": {
+   "finance_quote": {
+    "symbol": "NVDA"
+   },
+   "finance_options": {
+    "symbol": "AAPL"
+   },
+   "finance_crypto": {
+    "pair": "BTCUSDT"
+   },
+   "finance_defi": {
+    "limit": 3
+   },
+   "social_sentiment": {
+    "query": "NVDA OR NVIDIA",
+    "limit": 3
+   },
+   "browser_browse": {
+    "url": "https://news.ycombinator.com"
+   },
+   "browser_act": {
+    "action": "open",
+    "args": {
+     "url": "https://news.ycombinator.com"
+    }
+   },
+   "web_search": {
+    "query": "MCP server",
+    "limit": 3
+   },
+   "scrape_stealth": {
+    "url": "https://expresso.pt"
+   },
+   "health": {},
+   "site_search": {
+    "site": "youtube",
+    "command": "search",
+    "query": "MCP",
+    "limit": 2
+   },
+   "auth_check": {
+    "site": "github"
+   },
+   "auth_status": {},
+   "browser_agent": {
+    "action": "open",
+    "url": "https://www.amazon.es/gp/css/order-history",
+    "session": "amazon"
+   }
+  }
+ },
+ "camofox": {
+  "maxBytes": 24000
+ }
 }
