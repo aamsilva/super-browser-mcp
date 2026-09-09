@@ -765,8 +765,21 @@ asyncio.run(main())
 // Cookies do Chrome importados (~/bin/chrome2camofox.py, 260 domínios) → navega
 // autenticado SEM o bridge Chrome (que acumula 4GB+ ao fim de dias). Auto-start
 // on demand; idle-shutdown interno devolve a RAM. 0MB entre tarefas.
+function camofoxKey() {
+  let key = process.env.CAMOFOX_ACCESS_KEY || "";
+  // v1.5.14: fallback ficheiro — instâncias spawnadas sem a key no env (spawn
+  // antigo, launchd, env parcial) liam nada → 403 Unauthorized do camofox.
+  if (!key) {
+    try {
+      const s = fs.readFileSync(path.join(os.homedir(), ".config/opencode/.secrets.env"), "utf8");
+      const m = s.match(/CAMOFOX_ACCESS_KEY="?([^"\n]+)"?/);
+      if (m) key = m[1].trim();
+    } catch { /* sem ficheiro — segue sem key */ }
+  }
+  return key;
+}
 function camofoxHeaders() {
-  const key = process.env.CAMOFOX_ACCESS_KEY || "";
+  const key = camofoxKey();
   return { "Content-Type": "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) };
 }
 async function camofoxHealth() {
@@ -781,7 +794,7 @@ async function camofoxEnsure() {
     const { spawn } = require("child_process");
     const child = spawn("npm", ["start"], {
       cwd: CFG.camofoxDir,
-      env: { ...process.env, CAMOFOX_CRASH_REPORT_ENABLED: "false", CAMOFOX_BIND_HOST: "127.0.0.1" },
+      env: { ...process.env, CAMOFOX_CRASH_REPORT_ENABLED: "false", CAMOFOX_BIND_HOST: "127.0.0.1", CAMOFOX_ACCESS_KEY: camofoxKey() },
       detached: true, stdio: "ignore",
     });
     child.unref();
