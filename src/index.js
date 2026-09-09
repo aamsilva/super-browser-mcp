@@ -228,6 +228,15 @@ server.tool("site_search", "Pesquisa num site específico via opencli (adapter).
         }
       }
     }
+        // v1.5.13: twitter TRENDING → camofox (o mesmo engine do sentiment — fecha o
+    // X-Trending flappy do news-intel; o opencli adapter tinha o binding morto)
+    if (site === "twitter" && command === "trending") {
+      const ct = await camofoxTrending(limit || 10);
+      if (ct.ok && ct.items && ct.items.length > 0) {
+        const items = ct.items.map(t => ({ categoria: t.categoria, topico: t.topico, posts: t.posts, engine: "camofox" }));
+        return { content: [{ type: "text", text: JSON.stringify({ engine: "camofox", n: items.length, results: items }) }] };
+      }
+    }
     if (site === "twitter" && command === "search" && query) {
       const ct = await camofoxSentiment(query, limit || 5);
       if (ct.ok && ct.items && ct.items.length > 0) {
@@ -447,7 +456,7 @@ async function camofoxTrending(limit = 10) {
   try {
     const { tab, mk, close } = await camofoxTab("https://x.com/explore/tabs/trending", { wait: 9000, dismissConsent: true });
     const limJ = JSON.stringify(limit || 10);
-    const expr = "(() => { const t = [...document.querySelectorAll('[data-testid=\"trend\"]')].slice(0," + limJ + ").map(el => { const lin = (el.innerText||'').split('\n').map(s=>s.trim()).filter(Boolean); return { topico: (lin[0]||'').slice(0,60), categoria: (lin.find(l => l.includes('Trending')) || lin[2] || '').slice(0,60), posts: (lin[1]||'').slice(0,20) }; }); return { logado: !!document.querySelector('[data-testid=\"SideNav_AccountSwitcher_Button\"]'), err: document.body.innerText.includes('Something went wrong'), items: t.filter(x => x.topico) }; })()";
+    const expr = "(() => { const t = [...document.querySelectorAll('[data-testid=trend]')].slice(0," + limJ + ").map(el => { const lin = (el.innerText||'').split('\\n').map(s=>s.trim()).filter(Boolean); return { topico: (lin[0]||'').slice(0,60), categoria: (lin.find(l => l.includes('Trending')) || lin[2] || '').slice(0,60), posts: (lin[1]||'').slice(0,20) }; }); return { logado: !!document.querySelector('[data-testid=SideNav_AccountSwitcher_Button]'), err: document.body.innerText.includes('Something went wrong'), items: t.filter(x => x.topico) }; })()";
     let res = {};
     for (let i = 0; i < 6; i++) {
       const r = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
