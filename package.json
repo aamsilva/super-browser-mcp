@@ -1,6 +1,6 @@
 {
   "name": "super-browser-mcp",
-  "version": "1.5.18",
+  "version": "1.5.19",
   "description": "MCP server que expõe as capacidades de browsing/finance do Mac Mini (opencli + Chrome bridge autenticado + searxng) como tools MCP. Consumível por opencode, VS Code, Antigravity, Claude Code, Cursor e remotamente pela VPS. | v1.5.0: chain camofox->opencli->cloakbrowser + camofox_search",
   "main": "index.js",
   "scripts": {

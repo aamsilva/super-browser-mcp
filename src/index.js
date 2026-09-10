@@ -68,6 +68,11 @@ const CFG = loadConfig();
  *  Resiliência: se o adapter rejeitar --window (ex: google news usa API,
  *  google search usa browser — inconsistente dentro do mesmo adapter),
  *  faz retry sem o flag. stdio ignore: o opencli não herda o stdin do MCP. */
+// B3 fix (10-Set): node PATH — o MCP é spawn com PATH mínimo e opencli usa
+  // #!/usr/bin/env node. Sem isto: "env: node: No such file or directory".
+  const _nodeDir = path.dirname(process.execPath || "/Users/augustosilva/.opencode/bin/node");
+  const ENV_WITH_NODE = { ...process.env, PATH: _nodeDir + ":" + (process.env.PATH || "/usr/local/bin:/usr/bin:/bin") };
+
 function oc(args, { timeout = CFG.timeoutMs, retries = 2 } = {}) {
   // Comandos browser:false (youtube transcript/search/video, github repos/...) REJEITAM
   // --window — só comandos de sites autenticados precisam dele. Estratégia: tentar com
@@ -76,7 +81,7 @@ function oc(args, { timeout = CFG.timeoutMs, retries = 2 } = {}) {
   const withWindow = CFG.windowAdapters.has(args[0]);
   const attempt = (win) => execFileSync(CFG.opencliBin, win ? [...args, "--window", "background", "--format", "json"]
                                                            : [...args, "--format", "json"], {
-    timeout, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
+    timeout, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"], env: ENV_WITH_NODE,
   });
   const TRANSIENT = /connection closed|ETIMEDOUT|ECONNRESET|spawnSync.*ETIMEDOUT|socket hang up|ENOTFOUND/i;
   for (let attemptNum = 0; ; attemptNum++) {
@@ -593,7 +598,7 @@ function browserExec(action, args, session, windowMode) {
   const flags = ["browser", session, ...cmd];
   if (windowMode) flags.push("--window", windowMode);
   const out = execFileSync(CFG.opencliBin, flags, {
-    timeout: CFG.timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
+    timeout: CFG.timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"], env: ENV_WITH_NODE,
   });
   try { return JSON.parse(out); } catch { return { raw: out.slice(0, 2000) }; }
 }
@@ -616,7 +621,7 @@ function browserExecAsync(action, args, session, windowMode, timeoutMs = 8000) {
     const flags = ["browser", session, ...cmd];
     if (windowMode) flags.push("--window", windowMode);
     execFile(CFG.opencliBin, flags, {
-      timeout: timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
+      timeout: timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"], env: ENV_WITH_NODE,
     }, (err, stdout) => {
       if (err) return resolve({ ok: false, error: err.message.slice(0, 120) });
       try { resolve(JSON.parse(stdout)); } catch { resolve({ raw: String(stdout).slice(0, 2000) }); }
@@ -1186,7 +1191,7 @@ server.tool("auth_status", "Estado de autenticação por site (opencli auth stat
       return { content: [{ type: "text", text: JSON.stringify({ ok: false, bridge_down: true, hint: "Chrome não corre (fechado pelo user). Os tools camofox não dependem dele. Reabrir: opencli browser main open <url> — auto-launch on-demand." }) }] };
     }
     const out = execFileSync(CFG.opencliBin, ["auth", "status", "--format", "json"], {
-      timeout: CFG.timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
+      timeout: CFG.timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"], env: ENV_WITH_NODE,
     });
     const d = JSON.parse(out);
     return { content: [{ type: "text", text: JSON.stringify(d) }] };
