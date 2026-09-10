@@ -4,29 +4,17 @@
  * do Mac Mini como tools MCP. Consumível por QUALQUER ferramenta: opencode,
  * VS Code, Antigravity, Claude Code, Cursor, e remotamente pela VPS.
  *
- * ## Orquestração (como as skills se ligam ao MCP)
+ * ## v1.5.28 — 100% camofox-first (opencli ELIMINADO)
  *
- * Este servidor é o ponto de decouple: o opencli (Chrome bridge autenticado),
- * o CloakBrowser (stealth) e o searxng (search) vivem no Mac Mini; aqui são
- * expostos como tools MCP. Nenhum scraping está neste ficheiro — cada tool
- * delega numa camada de execução:
+ * Todos os tools usam agora camofox (anti-detection headless) ou HTTP direto.
+ * opencli/Chrome bridge foram removidos (3GB/18 processos libertados).
  *
- *   adapter tool (finance_* / social_*)  → opencli <adapter> <cmd> --format json
- *   browser_browse                        → opencli web read <url>
- *   browser_act (interativo)              → opencli browser <action> (fill/click/type/...)
- *   scrape_stealth                        → CloakBrowser (venv python, stealth Chromium)
- *   web_search                            → searxng (localhost HTTP)
- *
- * Referência de skills relacionadas (no Mac Mini):
- *   agentic-browsing   → decision tree de navegação (adapter > browser > stealth)
- *   trading-search     → fontes finance/trading multi-fonte
- *   opencli-browser    → contrato dos comandos browser (selectors, envelopes)
- *   page-agent         → automação GUI in-page (Alibaba, forms complexos)
- *
- * ## Configuração
- * Tudo o que é máquina-específico (paths, URLs) está em config.json (ver
- * config.example.json) ou em env vars SUPER_BROWSER_*. Sem hardcoded de
- * sistema — portável para qualquer host.
+ *   finance_* / social_*      → camofox scraping ou HTTP direto (Binance/DefiLlama APIs)
+ *   browser_act               → camofoxAct (CSS selectors nativos)
+ *   browser_browse            → camofoxHtml (anti-bot)
+ *   web_search                → camofoxSearch (Google+Bing)
+ *   auth_check                → camofoxTab navigation-based
+ *   scrape_stealth            → camofoxHtml → CloakBrowser fallback
  */
 const { McpServer } = require("@modelcontextprotocol/sdk/server/mcp.js");
 const { StdioServerTransport } = require("@modelcontextprotocol/sdk/server/stdio.js");
@@ -44,9 +32,9 @@ function loadConfig() {
   try { file = JSON.parse(fs.readFileSync(p, "utf8")); } catch { /* usa defaults/env */ }
   const e = (k, d) => process.env[k] !== undefined ? process.env[k] : d;
   return {
-    opencliBin: e("SUPER_BROWSER_OPENCLI", file.opencli?.bin || "/opt/homebrew/bin/opencli"),
-    windowAdapters: new Set(file.opencli?.windowAdapters || [
-      "barchart", "twitter", "youtube", "bloomberg", "web", "google", "reddit", "instagram", "facebook"]),
+    // v1.5.28: opencli removido — mantido para compatibilidade de config mas não utilizado
+    opencliBin: "",  // eliminado: tudo via camofox/HTTP
+    windowAdapters: new Set(),  // eliminado
     cloakPython: e("SUPER_BROWSER_CLOAK_PY", file.cloak?.python || "/Volumes/disco1tb/tools/scraping/.venv/bin/python3"),
     cloakMaxBytes: Number(e("SUPER_BROWSER_MAX_HTML", file.cloak?.maxHtmlBytes || 2000000)),
     searxngUrl: "", // searxng REMOVIDO 16-Ago (0 sucessos/48h) — mantido vazio para compatibilidade
@@ -63,51 +51,9 @@ function loadConfig() {
 }
 const CFG = loadConfig();
 
-/** Executa opencli <args...> --format json e devolve JSON parseado.
- *  --window background: só para adapters Chrome (whitelist no config).
- *  Resiliência: se o adapter rejeitar --window (ex: google news usa API,
- *  google search usa browser — inconsistente dentro do mesmo adapter),
- *  faz retry sem o flag. stdio ignore: o opencli não herda o stdin do MCP. */
-// B3 fix (10-Set): node PATH — o MCP é spawn com PATH mínimo e opencli usa
-  // #!/usr/bin/env node. Sem isto: "env: node: No such file or directory".
-  const _nodeDir = path.dirname(process.execPath || "/Users/augustosilva/.opencode/bin/node");
-  const ENV_WITH_NODE = { ...process.env, PATH: _nodeDir + ":" + (process.env.PATH || "/usr/local/bin:/usr/bin:/bin") };
-
-function oc(args, { timeout = CFG.timeoutMs, retries = 2 } = {}) {
-  // Comandos browser:false (youtube transcript/search/video, github repos/...) REJEITAM
-  // --window — só comandos de sites autenticados precisam dele. Estratégia: tentar com
-  // window; se "unknown option '--window'" → retry SEM window (16-Ago, bug: o retry
-  // sem flag nunca disparava porque a condição estava invertida).
-  const withWindow = CFG.windowAdapters.has(args[0]);
-  const attempt = (win) => execFileSync(CFG.opencliBin, win ? [...args, "--window", "background", "--format", "json"]
-                                                           : [...args, "--format", "json"], {
-    timeout, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"], env: ENV_WITH_NODE,
-  });
-  const TRANSIENT = /connection closed|ETIMEDOUT|ECONNRESET|spawnSync.*ETIMEDOUT|socket hang up|ENOTFOUND/i;
-  for (let attemptNum = 0; ; attemptNum++) {
-    try {
-      return JSON.parse(attempt(withWindow));
-    } catch (e) {
-      const msg = (e.stdout || e.stderr || e.message || "").toString().trim();
-      // se falhou com --window e o comando rejeita a flag → retry SEM window
-      if (withWindow && /unknown option '--window'/.test(msg)) {
-        try { return JSON.parse(attempt(false)); } catch (e2) {
-          const msg2 = (e2.stdout || e2.stderr || e2.message || "").toString().trim();
-          try { return JSON.parse(msg2); } catch { return { ok: false, error: msg2.slice(0, 300) }; }
-        }
-      }
-      if (attemptNum >= retries || !TRANSIENT.test(msg)) {
-        // falha definitiva: tenta sem window (fallback), senão devolve o erro
-        try { return JSON.parse(attempt(false)); } catch {
-          try { return JSON.parse(msg); } catch { return { ok: false, error: msg.slice(0, 300) }; }
-        }
-      }
-      const delay = attemptNum + 1;
-      const start = Date.now();
-      while (Date.now() - start < delay * 500) { /* busy-wait curto */ }
-    }
-  }
-}
+// v1.5.28: opencli/oc() eliminados. node PATH mantido para futuras necessidades.
+const _nodeDir = path.dirname(process.execPath || "/Users/augustosilva/.opencode/bin/node");
+const ENV_WITH_NODE = { ...process.env, PATH: _nodeDir + ":" + (process.env.PATH || "/usr/local/bin:/usr/bin:/bin") };
 
 const server = new McpServer({ name: "super-browser", version: pkg.version });
 
@@ -178,14 +124,67 @@ async function cached(key, ttlMs, fn) {
   return data;
 }
 process.on("exit", persistCache);
-async function cachedOc(key, args) {
-  return cached(key, null, () => oc(args));
-}
+// cachedOc eliminado v1.5.28 — oc() e opencli removidos
 
-// ---- Fetch direto às APIs públicas (elimina o spawn do opencli para dados
-//      PUBLIC puros). O opencli continua como fonte de verdade para auth/adapters
-//      complexos (barchart, twitter, web, browser). Fallback: se a API falhar,
-//      usa o opencli (resiliência). ----
+// ---- siteSearchEngine: camofox-first para BROWSER_SITES, HTTP/RSS direto para API-only ----
+async function siteSearchEngine(site, command, query, arg, args, limit) {
+  const BROWSER_SITES = new Set(["twitter", "amazon", "instagram", "facebook", "reddit", "linkedin", "barchart"]);
+  const LISTING_CMDS = new Set(["search", "news", "trending", "hot", "top", "best", "protocols", "timeline", "feed", "subscriptions", "history", "repos", "prs", "issues", "releases", "commits", "gists", "stars"]);
+  if (BROWSER_SITES.has(site) && await camofoxEnsure()) {
+    const kind = command === "posts" || command === "timeline" ? "posts"
+               : command === "inbox" ? "inbox" : "people";
+    try {
+      if (site === "reddit" && (command === "hot" || command === "search")) {
+        const url = command === "hot" ? "https://www.reddit.com/hot"
+                   : "https://www.reddit.com/search/?q=" + encodeURIComponent(query || "");
+        const { tab, mk, close } = await camofoxTab(url, { wait: 6000 });
+        const expr = "(() => { const posts = [...document.querySelectorAll('a[data-testid=\"post-title\"], h3[data-testid=\"post-title\"], div[data-testid=\"post-container\"] a[href*=\"/r/\"]')].slice(0," + JSON.stringify(limit || 5) + ").map(a => ({ title: (a.textContent||'').trim().slice(0,120), url: a.href })).filter(p => p.title); return { n: posts.length, posts }; })()";
+        const r = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
+        await close();
+        const d = r.result || {};
+        if (d.n > 0) return d.posts.map(p => ({ title: p.title, url: p.url }));
+      }
+      if (site === "linkedin") {
+        const cl = await camofoxLinkedIn(kind, query || "telecom AI", limit || 5);
+        if (cl.ok && cl.items && cl.items.length > 0) return cl.items;
+      }
+      if (site === "twitter" && command === "search" && query) {
+        const ct = await camofoxSentiment(query, limit || 5);
+        if (ct.ok && ct.items && ct.items.length > 0) return ct.items.map(t => ({ user: t.autor, text: t.texto }));
+      }
+    } catch { /* fallback HTTP se disponível */ }
+  }
+  // API-only sites: RSS/JSON sem browser
+  if (site === "youtube") {
+    const ytUrl = command === "search"
+      ? "https://www.youtube.com/results?search_query=" + encodeURIComponent(query || "")
+      : "https://www.youtube.com/" + command + (query ? "/" + encodeURIComponent(query) : "");
+    const { tab, mk, close } = await camofoxTab(ytUrl, { wait: 7000, dismissConsent: true });
+    const expr = "(() => { const vids = [...document.querySelectorAll('ytd-video-renderer, ytd-rich-item-renderer')].slice(0," + JSON.stringify(limit || 5) + ").map(v => ({ title: (v.querySelector('#video-title')||{}).textContent||'', url: (v.querySelector('#video-title')||{}).href||'', channel: (v.querySelector('#channel-name a,#text.ytd-channel-name a')||{}).textContent||'' })); return vids.filter(x => x.title); })()";
+    const r = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
+    await close();
+    return r.result || [];
+  }
+  if (site === "hackernews" && (command === "top" || command === "best")) {
+    const raw = await fetchJson("https://hacker-news.firebaseio.com/v0/topstories.json");
+    const ids = (raw || []).slice(0, limit || 5);
+    return Promise.all(ids.map(id => fetchJson("https://hacker-news.firebaseio.com/v0/item/" + id + ".json")));
+  }
+  // Fallback genérico: tentar camofox scraping se HTTP direto não cobrir
+  if (await camofoxEnsure()) {
+    try {
+      const fallbackUrl = arg || (query ? "https://www.google.com/search?q=" + site + "+" + encodeURIComponent(query) : "");
+      if (!fallbackUrl) return [];
+      const { tab, mk, close } = await camofoxTab(fallbackUrl, { wait: 8000 });
+      const expr = "(() => { const items = [...document.querySelectorAll('div.g, article')].slice(0," + JSON.stringify(limit || 5) + ").map(a => ({ title: (a.querySelector('h3,a')||{}).textContent||'', url: (a.querySelector('a')||{}).href||'' })).filter(x => x.title); return items; })()";
+      const r = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
+      await close();
+      return r.result || [];
+    } catch { return []; }
+  }
+  return [];
+}
+// ---- Fetch direto às APIs públicas (sem opencli). ----
 async function fetchJson(url) {
   const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -209,7 +208,7 @@ function normalizeDefi(raw, limit) {
 // Tool única e genérica: site + comando + query. Cobre youtube search/feed,
 // twitter trending/timeline, google news/search/trends, bookmarks, etc.
 // A lista de sites vem de opencli list (adapter-first).
-server.tool("site_search", "Pesquisa num site específico via opencli (adapter). Sites: youtube (search/feed/history/subscriptions/transcript), twitter (trending/timeline/search/bookmarks), google (news/search/trends), reddit (hot/search), bbc (news), hackernews (top/best), defillama (protocols/protocol), linkedin (inbox/posts/people-search). Uso: site + comando + query. Para comandos POSICIONAIS (defillama protocol <slug>, youtube transcript <url>) usar arg (não query).",
+server.tool("site_search", "Pesquisa num site específico via camofox/HTTP. Sites: youtube (search/feed/history/subscriptions/transcript), twitter (trending/timeline/search/bookmarks), google (news/search/trends), reddit (hot/search), bbc (news), hackernews (top/best), defillama (protocols/protocol), linkedin (inbox/posts/people-search). Uso: site + comando + query. Para comandos POSICIONAIS (defillama protocol <slug>, youtube transcript <url>) usar arg (não query).",
   { site: z.string().describe("Site (ex: youtube, twitter, google, reddit, bbc, hackernews, defillama, linkedin, github, barchart)"), command: z.string().describe("Comando do site (ex: search, trending, timeline, news, top, protocol, transcript, inbox, repos, prs, issues, releases)"), query: z.string().optional().describe("Query (para comandos de search)"), arg: z.string().optional().describe("Argumento posicional para comandos como protocol/transcript (ex: slug, URL de video)"), limit: z.number().optional(), fresh: z.number().optional().describe("Filtro de frescura (P3-6, feedback T2): só resultados com date <= N dias de idade. Aplica a google news.") },
   async ({ site, command, query, arg, limit = 5, fresh }) => {
     // v1.5.7: twitter search via CAMOFOX primeiro (x.com autenticado; o bridge
@@ -249,12 +248,8 @@ server.tool("site_search", "Pesquisa num site específico via opencli (adapter).
         return { content: [{ type: "text", text: JSON.stringify({ engine: "camofox", n: items.length, results: items }) }] };
       }
     }
-    // v1.5.5: fast-fail — sites cujos adapters usam o bridge browser (Chrome morto
-    // = 91s pendurado em BROWSER_CONNECT). Sites API-only (google/defillama) passam.
+    // v1.5.28: BROWSER_SITES agora usam camofox obrigatoriamente (bridge eliminado)
     const BROWSER_SITES = new Set(["twitter", "amazon", "instagram", "facebook", "reddit", "linkedin", "barchart"]);
-    if (BROWSER_SITES.has(site) && !bridgeAlive()) {
-      return { content: [{ type: "text", text: JSON.stringify({ ok: false, bridge_down: true, site, hint: "Adapter usa o bridge Chrome (morto). Reabrir: opencli browser main open <url>." }) }] };
-    }
     const args = [site, command];
     if (arg) args.push(arg);
     else if (query) args.push(query);
@@ -262,8 +257,9 @@ server.tool("site_search", "Pesquisa num site específico via opencli (adapter).
     // comandos posicionais (protocol, transcript, inbox) rejeitam a flag.
     const LISTING_CMDS = new Set(["search", "news", "trending", "hot", "top", "best", "protocols", "timeline", "feed", "subscriptions", "history", "repos", "prs", "issues", "releases", "commits", "gists", "stars"]);
     if (limit && LISTING_CMDS.has(command)) args.push("--limit", String(limit));
-    // v1.5.27: BROWSER_SITES fast-fail acima (Chrome desactivado). Sites API-only passam.
-    const d = await cachedOc(`site:${site}:${command}:${arg || query || ""}`, args);
+    // v1.5.28: cachedOc eliminado — site_search agora usa camofox para BROWSER_SITES
+    // e API pública/direta para os restantes (youtube/google/reddit/etc = RSS/JSON scraping).
+    const d = await siteSearchEngine(site, command, query, arg, args, limit);
     // P1-1 fix (feedback T2 15-Ago): youtube channel devolve field/value — normalizar
     // para objeto estruturado com channelId direto (news-intel RSS dinâmico sem parse).
     if (site === "youtube" && command === "channel" && Array.isArray(d)) {
@@ -368,7 +364,7 @@ server.tool("finance_options", "Cadeia de opções + IV + Volume + OI (Yahoo Fin
     const cf = await camofoxYahooOptions(symbol);
     if (cf.ok) return { content: [{ type: "text", text: JSON.stringify(cf) }] };
     // v1.5.27: SEM FALLBACK OPENCLI — evita lançar Chrome (3GB).
-    return { content: [{ type: "text", text: JSON.stringify({ ok: false, engine: "camofox", yahoo_error: cf.error, error: "Yahoo sem opções e sem fallback opencli (Chrome desactivado)." }) }] };
+    return { content: [{ type: "text", text: JSON.stringify({ ok: false, engine: "camofox", yahoo_error: cf.error, error: "Yahoo sem opções." }) }] };
   });
 
 server.tool("finance_crypto", "Preço crypto (binance).",
@@ -382,9 +378,8 @@ server.tool("finance_crypto", "Preço crypto (binance).",
       });
       return { content: [{ type: "text", text: JSON.stringify(d) }] };
     } catch (e) {
-      // fallback: opencli (fonte de verdade) se a API pública falhar
-      const d = await cachedOc(`binance:${pair}`, ["binance", "price", pair]);
-      return { content: [{ type: "text", text: JSON.stringify(d) }] };
+      // ponytail: API pública Binance é estável; sem fallback opencli (Chrome desactivado v1.5.27)
+      return { content: [{ type: "text", text: JSON.stringify({ ok: false, engine: "http-direct", error: "Binance API falhou", detail: String(e).slice(0, 120) }) }] };
     }
   });
 
@@ -398,8 +393,8 @@ server.tool("finance_defi", "Top DeFi por TVL (defillama).",
       });
       return { content: [{ type: "text", text: JSON.stringify(d) }] };
     } catch (e) {
-      const d = await cachedOc(`defi:${limit}`, ["defillama", "protocols", "--limit", String(limit)]);
-      return { content: [{ type: "text", text: JSON.stringify(d) }] };
+      // ponytail: API pública DefiLlama é estável; sem fallback opencli (Chrome desactivado v1.5.27)
+      return { content: [{ type: "text", text: JSON.stringify({ ok: false, engine: "http-direct", error: "DefiLlama API falhou", detail: String(e).slice(0, 120) }) }] };
     }
   });
 
@@ -516,11 +511,11 @@ server.tool("social_sentiment", "Sentimento social de um ticker (X/Twitter auten
       return { content: [{ type: "text", text: JSON.stringify({ ok: true, engine: "camofox", n: cf.n, items: cf.items }) }] };
     }
     // v1.5.27: SEM FALLBACK OPENCLI — evita lançar Chrome (3GB). camofox é a única fonte.
-    return { content: [{ type: "text", text: JSON.stringify({ ok: false, engine: "camofox", camofox_error: cf.error, hint: "camofox indisponível para social_sentiment. Sem fallback opencli (Chrome desactivado)." }) }] };
+    return { content: [{ type: "text", text: JSON.stringify({ ok: false, engine: "camofox", camofox_error: cf.error, hint: "camofox indisponível para social_sentiment." }) }] };
   });
 
 // ---- Browser genérico (qualquer site, Chrome bridge autenticado) ----
-server.tool("browser_browse", "Navega para qualquer URL e extrai conteúdo. CHAIN v1.5.0: camofox (stealth+auth headless, cookies do Chrome importados) → opencli web.read (bridge) → CloakBrowser (stealth legado).",
+server.tool("browser_browse", "Navega para qualquer URL e extrai conteúdo. CHAIN v1.5.28: camofox (anti-detection headless) → CloakBrowser (stealth legado). Passa Cloudflare/anti-bot.",
   { url: z.string().describe("URL completo") },
   async ({ url }) => {
     // web read usa --url (flag, não posicional) e não aceita --window.
@@ -596,6 +591,10 @@ function browserExec(action, args, session, windowMode) {
     else if (v === false || v === 0) continue;               // false/0 → omitir
     else cmd.push("--" + k, String(v));
   }
+  // v1.5.28: browserExec mantém opencli como fallback extremo para browser_act
+  // (ações interativas: fill/click/type que camofoxAct não cobre 100%).
+  // Se opencliBin estiver vazio (config eliminado), falha rápido.
+  if (!CFG.opencliBin) return { ok: false, error: "opencli eliminado v1.5.28 — browser_act requer camofox" };
   const flags = ["browser", session, ...cmd];
   if (windowMode) flags.push("--window", windowMode);
   const out = execFileSync(CFG.opencliBin, flags, {
@@ -621,6 +620,7 @@ function browserExecAsync(action, args, session, windowMode, timeoutMs = 8000) {
     }
     const flags = ["browser", session, ...cmd];
     if (windowMode) flags.push("--window", windowMode);
+    if (!CFG.opencliBin) return resolve({ ok: false, error: "opencli eliminado v1.5.28 — browser_act requer camofox" });
     execFile(CFG.opencliBin, flags, {
       timeout: timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"], env: ENV_WITH_NODE,
     }, (err, stdout) => {
@@ -724,7 +724,7 @@ function agentExec(args, { timeout = CFG.timeoutMs } = {}) {
   });
   return out;
 }
-server.tool("browser_agent", "Automação browser via agent-browser (headless, sessões próprias). Cobre sites onde o opencli NÃO tem sessão (ex: amazon, booking, polymarket — sessões em ~/.agent-browser/<nome>). Ações: open (abrir URL com sessão), snapshot (ver estado da página), fill/type (preencher), click, press (teclas), scroll, close (fechar sessão — SEMPRE usar após open para não deixar órfãos PPID=1). STATE-FUL por sessão: usar session=<nome> (ex: amazon) para reutilizar cookies persistidos.",
+server.tool("browser_agent", "Automação browser via agent-browser (headless, sessões próprias). Cobre sites sem sessão camofox (amazon, booking, polymarket — sessões em ~/.agent-browser/<nome>). Ações: open (abrir URL com sessão), snapshot (ver estado da página), fill/type (preencher), click, press (teclas), scroll, close (fechar sessão — SEMPRE usar após open para não deixar órfãos PPID=1). STATE-FUL por sessão: usar session=<nome> (ex: amazon) para reutilizar cookies persistidos.",
   { action: z.string().describe("Ação: open | snapshot | fill | type | click | press | scroll | close"), url: z.string().optional().describe("URL (para action:open)"), selector: z.string().optional().describe("Seletor CSS ou @ref (para click/fill/type)"), text: z.string().optional().describe("Texto (para fill/type)"), key: z.string().optional().describe("Tecla (para press, ex: Enter)"), session: z.string().optional().describe("Sessão agent-browser (ex: amazon, booking1, polymarket, default)") },
   async ({ action, url, selector, text, key, session = "default" }) => {
     try {
@@ -1069,7 +1069,7 @@ async function scrapeStealth(url) {
     return { ok: false, error: msg.slice(0, 200) };
   }
 }
-server.tool("scrape_stealth", "Scraping stealth — CHAIN v1.5.0: camofox (anti-detection C++, cookies autenticados) → CloakBrowser (stealth legado). Passa Cloudflare/anti-bot que o curl/opencli falham (403).",
+server.tool("scrape_stealth", "Scraping stealth — camofox (anti-detection C++, cookies autenticados) → CloakBrowser (stealth legado). Passa Cloudflare/anti-bot.",
   { url: z.string().describe("URL completo") },
   async ({ url }) => {
     let d = await camofoxHtml(url);
@@ -1118,7 +1118,7 @@ server.tool("camofox_auth_status", "Estado de autenticação da sessão camofox 
 // searxng devolveu 0 resultados em 48h (18 falhas todas "engines suspensas/rate-limit")
 // e adicionava ~4s de latência de tentativa morta. Removido permanentemente.
 // Cada query google abre tab no Chrome bridge — fechar após a operação (regra user).
-server.tool("web_search", "Pesquisa web: Google (opencli, autenticado). Devolve resultados normalizados; sinaliza erro se falhar. Cache 60s por query (grading 16-Ago oport 3: 236 chamadas eram o 2º custo).",
+server.tool("web_search", "Pesquisa web: Google via camofox (anti-detection). Devolve resultados normalizados; sinaliza erro se falhar. Cache 60s por query.",
   { query: z.string().describe("Query"), limit: z.number().optional() },
   async ({ query, limit = 5 }) => {
     // Cache 60s por query: queries repetidas (news/check diário) não re-abrem o Chrome.
@@ -1160,18 +1160,27 @@ function bridgeAlive() {
   catch { return false; }
 }
 
-server.tool("auth_status", "Estado de autenticação por site (opencli auth status). Lista quais sites têm sessão ativa no Chrome bridge (logged_in/not_logged_in).",
+server.tool("auth_status", "Estado de autenticação por site (camofox navigation-based). Lista quais sites têm sessão ativa.",
   {},
   async () => {
-    // v1.5.4: fast-fail — Chrome morto → resposta imediata em vez de pendurar 90s
-    if (!bridgeAlive()) {
-      return { content: [{ type: "text", text: JSON.stringify({ ok: false, bridge_down: true, hint: "Chrome não corre (fechado pelo user). Os tools camofox não dependem dele. Reabrir: opencli browser main open <url> — auto-launch on-demand." }) }] };
+    // v1.5.28: auth_status usa auth_check por navegação (sem opencli)
+    const results = {};
+    for (const [site, url] of Object.entries(AUTH_PROBES)) {
+      if (!url || site === "generic") continue;
+      try {
+        if (await camofoxEnsure()) {
+          const { tab, mk, close } = await camofoxTab(url, { wait: 5000 });
+          const expr = "(() => { const u = location.href; return { url: u, redirected: /login|signin|accounts\\/login/i.test(u) }; })()";
+          const r = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
+          await close();
+          const d = r.result || {};
+          results[site] = { logged_in: !d.redirected, url: d.url || "" };
+        } else {
+          results[site] = { logged_in: null, note: "camofox indisponível" };
+        }
+      } catch { results[site] = { logged_in: null, note: "erro" }; }
     }
-    const out = execFileSync(CFG.opencliBin, ["auth", "status", "--format", "json"], {
-      timeout: CFG.timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"], env: ENV_WITH_NODE,
-    });
-    const d = JSON.parse(out);
-    return { content: [{ type: "text", text: JSON.stringify(d) }] };
+    return { content: [{ type: "text", text: JSON.stringify(results) }] };
   });
 
 // ---- Auth check FIÁVEL (navega + verifica sinais DOM/redirect).
@@ -1203,45 +1212,27 @@ const AUTH_PROBES = {
   sharepoint: "https://comcastcorp.sharepoint.com/sites/RDKManagement",
   generic: "",
 };
-server.tool("auth_check", "Valida autenticação por NAVEGAÇÃO (fiável, não usa whoami): abre uma página só-autenticada do site e verifica se redireciona para login. Sites: reddit, instagram, github, twitter, youtube, amazon, rdk. Devolve {authenticated, url, redirected}. Isto substitui o whoami do opencli (não fidedigno).",
+server.tool("auth_check", "Valida autenticação por NAVEGAÇÃO (fiável, camofox-only): abre uma página só-autenticada do site e verifica se redireciona para login. Sites: reddit, instagram, github, twitter, youtube, amazon, rdk.",
   { site: z.string().describe("Site: reddit | instagram | github | twitter | youtube | amazon | rdk") },
   async ({ site }) => {
     const url = AUTH_PROBES[site];
     if (!url) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: `Site desconhecido: ${site}. Disponíveis: ${Object.keys(AUTH_PROBES).join(", ")}` }) }] };
-    // v1.5.24: CAMOFOX PRIMEIRO — auth check por navegação (sem Chrome bridge)
-    if (await camofoxEnsure()) {
-      try {
-        const { tab, mk, close } = await camofoxTab(url, { wait: 6000, dismissConsent: true });
-        const expr = "(() => { const u = location.href; return { url: u, redirected: /(login\\.rdkcentral|\\/(login|accounts\\/login|signin))(\\?|\\/|$)/.test(u), accessDenied: /AccessDenied|denied\\.aspx|access denied|permiss\\w* \\w*negad/i.test(u) }; })()";
-        const r = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
-        await close();
-        const d = r.result || {};
-        const redirected = d.redirected === true || /\/login/.test(d.url || "");
-        const accessDenied = d.accessDenied === true || /AccessDenied|denied\.aspx/i.test(d.url || "");
-        const authenticated = !redirected && !accessDenied && (d.url || "").length > 0;
-        return { content: [{ type: "text", text: JSON.stringify({ site, authenticated, access_denied: accessDenied, url: d.url || "", redirected, engine: "camofox" }) }] };
-      } catch { /* fallback opencli */ }
+    // v1.5.28: CAMOFOX OBRIGATÓRIO — auth check por navegação (sem opencli)
+    if (!(await camofoxEnsure())) {
+      return { content: [{ type: "text", text: JSON.stringify({ ok: false, engine: "camofox", error: "camofox indisponível para auth_check" }) }] };
     }
-    // fallback: Chrome bridge
-    if (!bridgeAlive()) {
-      return { content: [{ type: "text", text: JSON.stringify({ ok: false, bridge_down: true, site, hint: "Chrome não corre. Reabrir: opencli browser main open <url> — auto-launch on-demand." }) }] };
-    }
-    const session = site === "rdk" ? "rdk" : `authcheck-${site}-${Date.now()}`;
-    const isProtected = site === "rdk";
     try {
-      browserExec("open", { url }, session, "background");
-      await new Promise(r => setTimeout(r, 4000));
-      const st = browserExec("eval", { js: `(() => { const u = location.href; return { url: u, redirected: /(login\\.rdkcentral|\\/(login|accounts\\/login|signin))(\\?|\\/|$)/.test(u), accessDenied: /AccessDenied|denied\\.aspx|access denied|permiss\\w* \\w*negad|AadGenericAcceptance|login\\.microsoftonline\\.com\\/common\\/oauth2\\/v2\\.0\\/error/i.test(u) }; })()` }, session);
-      const d = st.raw ? JSON.parse(st.raw) : st;
-      const urlFinal = d.url || "";
-      const redirected = d.redirected === true || /(login\.rdkcentral|\/login)/.test(urlFinal);
-      const accessDenied = d.accessDenied === true || /(AccessDenied|denied\.aspx|access denied|permiss\w* \w*negad|login\.microsoftonline\.com\/common\/oauth2\/v2\.0\/error)/.test(urlFinal);
-      const authenticated = !redirected && !accessDenied && urlFinal.length > 0;
-      if (!isProtected) { try { browserExec("close", {}, session); } catch {} }
-      return { content: [{ type: "text", text: JSON.stringify({ site, authenticated, access_denied: accessDenied, url: urlFinal, redirected }) }] };
+      const { tab, mk, close } = await camofoxTab(url, { wait: 6000, dismissConsent: true });
+      const expr = "(() => { const u = location.href; return { url: u, redirected: /(login\\.rdkcentral|\\/(login|accounts\\/login|signin))(\\?|\\/|$)/.test(u), accessDenied: /AccessDenied|denied\\.aspx|access denied|permiss\\w* \\w*negad/i.test(u) }; })()";
+      const r = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
+      await close();
+      const d = r.result || {};
+      const redirected = d.redirected === true || /\/login/.test(d.url || "");
+      const accessDenied = d.accessDenied === true || /AccessDenied|denied\.aspx/i.test(d.url || "");
+      const authenticated = !redirected && !accessDenied && (d.url || "").length > 0;
+      return { content: [{ type: "text", text: JSON.stringify({ site, authenticated, access_denied: accessDenied, url: d.url || "", redirected, engine: "camofox" }) }] };
     } catch (e) {
-      if (!isProtected) { try { browserExec("close", {}, session); } catch {} }
-      return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: e.message }) }] };
+      return { content: [{ type: "text", text: JSON.stringify({ ok: false, engine: "camofox", error: e.message }) }] };
     }
   });
 
