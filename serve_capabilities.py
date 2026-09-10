@@ -251,6 +251,7 @@ pre{background:var(--surface);border:1px solid var(--border);border-radius:var(-
 <h1><img src="/logo.svg" alt="" width="30" height="30" style="vertical-align:-6px;margin-right:10px;border-radius:7px">Super-Browser <span class="accent">MCP</span></h1>
 <div class="sub">Edge browsing capabilities — monitoria, telemetria e testes manuais · LAN/Tailscale</div>
 <div id="st"></div>
+<div id="engines" style="margin-top:12px"></div>
 <h2>🧪 Testes manuais das tools</h2>
 <div class="tools" id="tools"></div>
 <h2>Telemetria</h2><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
@@ -281,7 +282,13 @@ document.getElementById('st').innerHTML=`<div class="grid">
 <div class="kpi"><div class="l">Erros</div><div class="v" style="color:${s.calls_fail>0?'var(--fail)':'inherit'}">${s.calls_fail}</div></div>
 <div class="kpi"><div class="l">Lat p50</div><div class="v">${s.latency_p50_ms}ms</div></div>
 <div class="kpi"><div class="l">Lat p95</div><div class="v">${s.latency_p95_ms}ms</div></div>
-<div class="kpi"><div class="l">Atualizado</div><div class="v" style="font-size:12px">${s.time}</div></div></div>`;}catch(e){document.getElementById('st').innerHTML='<div class="kpi"><div class="l">erro</div><div class="v">'+e.message+'</div></div>';}}
+<div class="kpi"><div class="l">Atualizado</div><div class="v" style="font-size:12px">${s.time}</div></div></div>`;}catch(e){document.getElementById('st').innerHTML='<div class="kpi"><div class="l">erro</div><div class="v">'+e.message+'</div></div>';}};
+async function loadEngines(){try{const r=await fetch('/api/engine-summary?hours=24');const d=await r.json();
+const engines=Object.entries(d).sort((a,b)=>b[1].calls-a[1].calls);
+const icon=(e)=>{if(e.includes('camofox'))return '🦊';if(e.includes('opencli'))return '🌐';if(e==='http-direct')return '⚡';return '·';};
+const color=(e)=>{if(e.includes('camofox'))return '#FF6B35';if(e.includes('opencli'))return '#4A90D9';if(e==='http-direct')return '#3fb950';return 'var(--text3)';};
+const total=engines.reduce((a,[,v])=>a+v.calls,0);
+document.getElementById('engines').innerHTML=`<div class="grid">${engines.map(([k,v])=>`<div class="kpi" style="border-left:3px solid ${color(k)}"><div class="l">${icon(k)} ${k}</div><div class="v">${v.calls} <span style="font-size:12px;color:${v.ok_pct>=99?'var(--ok)':v.ok_pct>=80?'var(--warn)':'var(--fail)'}">${v.ok_pct}%</span></div><div class="l">${v.avg_ms}ms avg · ${Math.round(v.calls/total*100)}% do total</div></div>`).join('')}</div>`;}catch(e){}}
 const TOOLS=__TOOLS_JSON__;
 const toolsEl=document.getElementById('tools');
 TOOLS.forEach(t=>{const d=document.createElement('div');d.className='card';d.innerHTML=`<h3>${t.name}</h3><div class="desc">${t.desc}</div><span class="status idle">idle</span>`;
@@ -306,7 +313,9 @@ async function hist(){try{
 const hours=document.getElementById('hoursSel').value;
 const r=await fetch('/api/history?hours='+hours+'&limit=500');const rows=await r.json();
 document.getElementById('histCount').textContent=rows.length+' chamadas';
-document.getElementById('hist').innerHTML='<tr><th>Hora</th><th>Source</th><th>Caller</th><th>Tool</th><th>Resultado</th><th>Latência</th><th>Resumo</th><th></th></tr>'+rows.map(x=>`<tr style="cursor:pointer" onclick="detail(${x.id})"><td>${x.ts}</td><td>${x.source||'?'}</td><td>${x.caller||'?'}</td><td>${x.tool}</td><td class="${x.ok?'ok-tag':'fail-tag'}">${x.ok?'OK':'FAIL'}</td><td>${Math.round(x.latency_ms)}ms</td><td title="${(x.summary||'').replace(/"/g,'&quot;')}">${(x.summary||'').slice(0,50)}</td><td>🔎</td></tr>`).join('');}catch(e){}}
+const engineIcon=(e)=>{if(!e||e==='unknown')return '·';if(e.includes('camofox'))return '🦊';if(e.includes('opencli'))return '🌐';if(e==='http-direct')return '⚡';return '·';};
+const engineColor=(e)=>{if(!e||e==='unknown')return 'var(--text3)';if(e.includes('camofox'))return '#FF6B35';if(e.includes('opencli'))return '#4A90D9';if(e==='http-direct')return '#3fb950';return 'var(--text3)';};
+document.getElementById('hist').innerHTML='<tr><th>Hora</th><th>Engine</th><th>Tool</th><th>Resultado</th><th>Latência</th><th>Resumo</th><th></th></tr>'+rows.map(x=>`<tr style="cursor:pointer" onclick="detail(${x.id})"><td>${x.ts}</td><td style="color:${engineColor(x.engine)}">${engineIcon(x.engine)} ${(x.engine||'').slice(0,12)}</td><td>${x.tool}</td><td class="${x.ok?'ok-tag':'fail-tag'}">${x.ok?'OK':'FAIL'}</td><td>${Math.round(x.latency_ms)}ms</td><td title="${(x.summary||'').replace(/"/g,'&quot;')}">${(x.summary||'').slice(0,50)}</td><td>🔎</td></tr>`).join('');}catch(e){}}
 async function loadPerf(){try{
 const hours=document.getElementById('perfHours').value;
 const r=await fetch('/api/perf?hours='+hours);const rows=await r.json();
@@ -337,7 +346,7 @@ document.getElementById('modal-body').textContent=
  'PARAMS:\\n'+(x.params||'(vazio)')+'\\n\\nRESULT:\\n'+(x.result||'(vazio)')+'\\n\\nSUMMARY:\\n'+(x.summary||'(vazio)')+'\\n\\nERROR:\\n'+(x.error||'(sem erro)');
 }catch(e){}}
 document.getElementById('footer').textContent='super-browser-mcp v1.0 · serve_capabilities.py · ' + new Date().toISOString().slice(0,10);
-snap();hist();loadPerf();setInterval(()=>{snap();hist();loadPerf();},15000);
+snap();hist();loadPerf();loadEngines();setInterval(()=>{snap();hist();loadPerf();loadEngines();},15000);
 </script>
 <div id="modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:999;align-items:center;justify-content:center">
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;width:90%;max-width:1000px;max-height:90vh;display:flex;flex-direction:column;overflow:hidden">
@@ -400,11 +409,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 p = dict(x.split("=") for x in q.split("&") if "=" in x)
                 hours = max(0, int(p.get("hours", hours)))
                 limit = min(2000, int(p.get("limit", limit)))
-            sql = "SELECT id, ts, tool, ok, latency_ms, caller, method, params, result_summary, source, error FROM calls"
+            sql = "SELECT id, ts, tool, ok, latency_ms, caller, method, params, result_summary, source, error, engine FROM calls"
             if hours:
                 sql += f" WHERE ts > {time.time() - hours * 3600}"
             sql += " ORDER BY id DESC LIMIT " + str(limit)
-            rows = [{"id": r[0], "ts": time.strftime("%H:%M:%S", time.localtime(r[1])), "tool": r[2], "ok": bool(r[3]), "latency_ms": r[4], "caller": r[5] or "?", "method": r[6] or "?", "params": (r[7] or "")[:500], "summary": r[8] or "", "source": r[9] or "?", "error": r[10] or ""} for r in conn.execute(sql)]
+            rows = [{"id": r[0], "ts": time.strftime("%H:%M:%S", time.localtime(r[1])), "tool": r[2], "ok": bool(r[3]), "latency_ms": r[4], "caller": r[5] or "?", "method": r[6] or "?", "params": (r[7] or "")[:500], "summary": r[8] or "", "source": r[9] or "?", "error": r[10] or "", "engine": r[11] or "unknown"} for r in conn.execute(sql)]
             self._json(rows)
         elif u.path == "/api/trace":
             # traceability completa: quem, como, params, tempo, resultado, resumo
@@ -447,6 +456,57 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "avg_ms": r[4] or 0, "max_ms": r[5] or 0,
                 })
             self._json(rows)
+        elif u.path == "/api/perf-engine":
+            # PERFORMANCE POR ENGINE: agregação por hora + engine
+            q = urlparse(self.path).query
+            hours = 24
+            if q:
+                p = dict(x.split("=") for x in q.split("&") if "=" in x)
+                hours = min(72, max(1, int(p.get("hours", 24))))
+            rows = []
+            for r in conn.execute("""
+                SELECT strftime('%m-%d %H:00', ts, 'unixepoch', 'localtime') as hora,
+                       tool, engine,
+                       COUNT(*) as n,
+                       SUM(CASE WHEN ok THEN 1 ELSE 0 END) as ok_n,
+                       ROUND(AVG(latency_ms), 0) as avg_ms
+                FROM calls
+                WHERE ts > ? AND engine != 'unknown'
+                GROUP BY hora, tool, engine
+                ORDER BY hora
+            """, (time.time() - hours * 3600,)):
+                n = r[3] or 0
+                rows.append({
+                    "hour": r[0], "tool": r[1], "engine": r[2],
+                    "calls": n, "ok": r[4] or 0,
+                    "ok_pct": round((r[4] or 0) / n * 100) if n else 100,
+                    "avg_ms": r[5] or 0,
+                })
+            self._json(rows)
+        elif u.path == "/api/engine-summary":
+            # RESUMO POR ENGINE: total calls, ok%, avg latência por engine
+            q = urlparse(self.path).query
+            hours = 24
+            if q:
+                p = dict(x.split("=") for x in q.split("&") if "=" in x)
+                hours = min(72, max(1, int(p.get("hours", 24))))
+            summary = {}
+            for r in conn.execute("""
+                SELECT engine,
+                       COUNT(*) as n,
+                       SUM(CASE WHEN ok THEN 1 ELSE 0 END) as ok_n,
+                       ROUND(AVG(latency_ms), 0) as avg_ms
+                FROM calls
+                WHERE ts > ? AND engine != 'unknown'
+                GROUP BY engine
+            """, (time.time() - hours * 3600,)):
+                n = r[1] or 0
+                summary[r[0]] = {
+                    "calls": n, "ok": r[2] or 0,
+                    "ok_pct": round((r[2] or 0) / n * 100) if n else 100,
+                    "avg_ms": r[3] or 0,
+                }
+            self._json(summary)
         else:
             self._json({"error": "not found"}, 404)
     def do_POST(self):

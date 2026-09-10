@@ -1377,14 +1377,15 @@ try {
   db = new (require("node:sqlite").DatabaseSync)(path.join(__dirname, "..", "capabilities_state.db"));
   db.exec("PRAGMA journal_mode=WAL");
   db.exec("PRAGMA busy_timeout=3000");
-  db.exec("CREATE TABLE IF NOT EXISTS calls (id INTEGER PRIMARY KEY, ts REAL, tool TEXT, ok INTEGER, latency_ms REAL, error TEXT, caller TEXT, method TEXT, params TEXT, result TEXT, source TEXT, result_type TEXT, result_summary TEXT)");
+  db.exec("CREATE TABLE IF NOT EXISTS calls (id INTEGER PRIMARY KEY, ts REAL, tool TEXT, ok INTEGER, latency_ms REAL, error TEXT, caller TEXT, method TEXT, params TEXT, result TEXT, source TEXT, result_type TEXT, result_summary TEXT, engine TEXT DEFAULT 'unknown')");
 } catch { db = null; }
 function mcpLogCall(tool, ok, ms, error, params, result) {
   if (!db) return;
   try {
-    const summary = (() => { try { const j = JSON.parse(result || "{}"); const eng = j.engine ? "engine=" + j.engine + " · " : ""; if (Array.isArray(j)) return eng + j.length + " itens"; if (j.error) return eng + "erro: " + String(j.error).slice(0, 60); if (j.authenticated !== undefined) return eng + "authenticated=" + j.authenticated; if (j.title && j.len) return eng + j.title.slice(0, 30) + " (" + j.len + "B)"; if (j.price) return eng + "price=" + j.price; if (j.ok !== undefined) return eng + "ok=" + j.ok; return eng + Object.keys(j).slice(0, 3).map(k => k + "=" + String(j[k]).slice(0, 15)).join(", "); } catch { return (result || "").slice(0, 80); } })();
-    db.prepare("INSERT INTO calls (ts, tool, ok, latency_ms, error, caller, method, params, result, source, result_type, result_summary) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").run(
-      Date.now() / 1000, tool, ok ? 1 : 0, ms, (error || "").slice(0, 300), "mcp-stdio", "mcp-direct", (params || "").slice(0, 300), (result || "").slice(0, 20000), "opencode", ok ? "ok" : "error", String(summary).slice(0, 120));
+    let engine = "unknown";
+    const summary = (() => { try { const j = JSON.parse(result || "{}"); engine = j.engine || (j.results && j.results[0] && j.results[0].engine) || engine; const eng = j.engine ? "engine=" + j.engine + " · " : ""; if (Array.isArray(j)) return eng + j.length + " itens"; if (j.error) return eng + "erro: " + String(j.error).slice(0, 60); if (j.authenticated !== undefined) return eng + "authenticated=" + j.authenticated; if (j.title && j.len) return eng + j.title.slice(0, 30) + " (" + j.len + "B)"; if (j.price) return eng + "price=" + j.price; if (j.ok !== undefined) return eng + "ok=" + j.ok; return eng + Object.keys(j).slice(0, 3).map(k => k + "=" + String(j[k]).slice(0, 15)).join(", "); } catch { return (result || "").slice(0, 80); } })();
+    db.prepare("INSERT INTO calls (ts, tool, ok, latency_ms, error, caller, method, params, result, source, result_type, result_summary, engine) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)").run(
+      Date.now() / 1000, tool, ok ? 1 : 0, ms, (error || "").slice(0, 300), "mcp-stdio", "mcp-direct", (params || "").slice(0, 300), (result || "").slice(0, 20000), "opencode", ok ? "ok" : "error", String(summary).slice(0, 120), engine);
   } catch { /* logging nunca deve partir o MCP */ }
 }
 // Interceptar tools/call — registar TODAS as chamadas independentemente da fonte.
