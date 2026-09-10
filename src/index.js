@@ -408,7 +408,12 @@ async function camofoxSentiment(query, limit = 5) {
         await new Promise(r3 => setTimeout(r3, 2000));
       }
     }
-    return { ok: true, engine: "camofox", n: (res.arts || []).length, items: res.arts || [] };
+    // B2: distinguir no-new-items vs fetch-error — stale de 0 items é válido
+    // quando o X não tem resultados para a query (não é erro de rede/SOUP).
+    const emptyReason = (res.arts || []).length === 0
+      ? (res.err ? "fetch_error" : "no_results")
+      : null;
+    return { ok: true, engine: "camofox", n: (res.arts || []).length, items: res.arts || [], ...(emptyReason ? { empty_reason: emptyReason } : {}), query };
   } catch (e) { return { ok: false, camofox_skip: true, error: String(e.message || e).slice(0, 120) }; }
 }
 
@@ -827,7 +832,14 @@ async function camofoxBrowse(url) {
   if (!(await camofoxEnsure())) return { ok: false, error: "camofox indisponível" };
   try {
     const { tab, mk, close } = await camofoxTab(url);
-    const snap = (await mk("GET", `/tabs/${tab}/snapshot?userId=${CFG.camofoxUser}`)).snapshot || "";
+    let snap = (await mk("GET", `/tabs/${tab}/snapshot?userId=${CFG.camofoxUser}`)).snapshot || "";
+    // B3: retry com wait extra se content_len 0 (SPA lenta como expresso.pt)
+    if (snap.length < 50) {
+      await mk("POST", `/tabs/${tab}/wait`, { userId: CFG.camofoxUser, timeout: 8000, waitForNetwork: true }).catch(() => {});
+      await mk("POST", `/tabs/${tab}/press`, { userId: CFG.camofoxUser, key: "End" }).catch(() => {});  // scroll para triggers lazy-load
+      await new Promise(r => setTimeout(r, 2000));
+      snap = (await mk("GET", `/tabs/${tab}/snapshot?userId=${CFG.camofoxUser}`)).snapshot || "";
+    }
     await close();
     return { ok: true, url, engine: "camofox", content: snap.slice(0, CFG.camofoxMaxBytes), content_len: snap.length };
   } catch (e) { return { ok: false, error: String(e.message || e).slice(0, 200) }; }
@@ -1299,6 +1311,11 @@ server.tool("auth_audit", "Audita a autenticação de TODOS os sites autenticado
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  // B1: keep-alive camofox — ping a cada 5min impede cold boot (idle >10min → 40-60s).
+  // Se camofox morrer entre pings, camofoxEnsure reinicia (warm boot <8s).
+  setInterval(async () => {
+    try { if (!(await camofoxHealth())) await camofoxEnsure(); } catch {}
+  }, 5 * 60 * 1000).unref();
 }
 
 // ---- Logging central de TODAS as chamadas tools/call (qualquer fonte: opencode,
