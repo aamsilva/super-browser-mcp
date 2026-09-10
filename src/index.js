@@ -847,7 +847,7 @@ async function camofoxEnsure() {
 async function camofoxTab(url, { wait = 10000, dismissConsent = true } = {}) {
   const H = camofoxHeaders();
   const mk = (m, p, b) => fetch(CFG.camofoxUrl + p, { method: m, headers: H,
-    body: b ? JSON.stringify(b) : undefined, signal: AbortSignal.timeout(60000) }).then(r => r.json());
+    body: b ? JSON.stringify(b) : undefined, signal: AbortSignal.timeout(15000) }).then(r => r.json());
   const r = await mk("POST", "/tabs", { userId: CFG.camofoxUser, sessionKey: "mcp-" + Date.now(), url });
   const tab = r.tabId;
   if (!tab) throw new Error("camofox: sem tabId (" + JSON.stringify(r).slice(0, 120) + ")");
@@ -1263,23 +1263,32 @@ const AUTH_PROBES = {
 server.tool("auth_check", "Valida autenticação por NAVEGAÇÃO (fiável, não usa whoami): abre uma página só-autenticada do site e verifica se redireciona para login. Sites: reddit, instagram, github, twitter, youtube, amazon, rdk. Devolve {authenticated, url, redirected}. Isto substitui o whoami do opencli (não fidedigno).",
   { site: z.string().describe("Site: reddit | instagram | github | twitter | youtube | amazon | rdk") },
   async ({ site }) => {
-    // v1.5.4: fast-fail — Chrome morto → resposta imediata (não pendurar)
+    const url = AUTH_PROBES[site];
+    if (!url) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: `Site desconhecido: ${site}. Disponíveis: ${Object.keys(AUTH_PROBES).join(", ")}` }) }] };
+    // v1.5.24: CAMOFOX PRIMEIRO — auth check por navegação (sem Chrome bridge)
+    if (await camofoxEnsure()) {
+      try {
+        const { tab, mk, close } = await camofoxTab(url, { wait: 6000, dismissConsent: true });
+        const expr = "(() => { const u = location.href; return { url: u, redirected: /(login\\.rdkcentral|\\/(login|accounts\\/login|signin))(\\?|\\/|$)/.test(u), accessDenied: /AccessDenied|denied\\.aspx|access denied|permiss\\w* \\w*negad/i.test(u) }; })()";
+        const r = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
+        await close();
+        const d = r.result || {};
+        const redirected = d.redirected === true || /\/login/.test(d.url || "");
+        const accessDenied = d.accessDenied === true || /AccessDenied|denied\.aspx/i.test(d.url || "");
+        const authenticated = !redirected && !accessDenied && (d.url || "").length > 0;
+        return { content: [{ type: "text", text: JSON.stringify({ site, authenticated, access_denied: accessDenied, url: d.url || "", redirected, engine: "camofox" }) }] };
+      } catch { /* fallback opencli */ }
+    }
+    // fallback: Chrome bridge
     if (!bridgeAlive()) {
       return { content: [{ type: "text", text: JSON.stringify({ ok: false, bridge_down: true, site, hint: "Chrome não corre. Reabrir: opencli browser main open <url> — auto-launch on-demand." }) }] };
     }
-    const url = AUTH_PROBES[site];
-    if (!url) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: `Site desconhecido: ${site}. Disponíveis: ${Object.keys(AUTH_PROBES).join(", ")}` }) }] };
-    // rdk usa a sessão protegida (nunca fechar — MFA); os outros usam sessão efémera.
     const session = site === "rdk" ? "rdk" : `authcheck-${site}-${Date.now()}`;
     const isProtected = site === "rdk";
     try {
       browserExec("open", { url }, session, "background");
       await new Promise(r => setTimeout(r, 4000));
-      // FIX 17-Ago: AccessDenied.aspx (SharePoint autenticado SEM permissão no site) NÃO
-      // redireciona para login → o audit antigo contava-o como autenticado (falso positivo).
-      // Detetar explicitamente: access denied ≠ auth OK.
       const st = browserExec("eval", { js: `(() => { const u = location.href; return { url: u, redirected: /(login\\.rdkcentral|\\/(login|accounts\\/login|signin))(\\?|\\/|$)/.test(u), accessDenied: /AccessDenied|denied\\.aspx|access denied|permiss\\w* \\w*negad|AadGenericAcceptance|login\\.microsoftonline\\.com\\/common\\/oauth2\\/v2\\.0\\/error/i.test(u) }; })()` }, session);
-      // browserExec devolve JSON parseado (eval devolve objeto) ou {raw: texto}
       const d = st.raw ? JSON.parse(st.raw) : st;
       const urlFinal = d.url || "";
       const redirected = d.redirected === true || /(login\.rdkcentral|\/login)/.test(urlFinal);
