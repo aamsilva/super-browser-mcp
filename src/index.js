@@ -343,12 +343,32 @@ server.tool("finance_quote", "Cotações e dados de ações (barchart). Suporta 
   });
 
 // camofoxOptions (v1.5.20): cadeia de opções via camofox — evita BROWSER_CONNECT no opencli bridge
-server.tool("finance_options", "Cadeia de opções + greeks + IV (barchart).",
+// camofoxYahooOptions (v1.5.22): options chain via Yahoo Finance (gratuito, sem Premier)
+// Yahoo Finance tem: Strike, Last, Bid, Ask, Change, Volume, Open Interest, IV
+async function camofoxYahooOptions(sym) {
+  if (!(await camofoxEnsure())) return { ok: false, camofox_skip: true };
+  try {
+    const { tab, mk, close } = await camofoxTab("https://finance.yahoo.com/quote/" + sym + "/options/", { wait: 10000, dismissConsent: true });
+    // Dismiss consent wall (Yahoo)
+    await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: "(()=>{const btn=document.querySelector('button[title*=Accept], button[title*=Agree]'); if(btn)btn.click(); return 'ok'})()" });
+    await new Promise(r => setTimeout(r, 2000));
+    const symJ = JSON.stringify(sym);
+    const expr = "(()=>{const t=document.querySelectorAll('table')[0]; if(!t)return null; const hdrs=[...t.querySelectorAll('thead th')].map(h=>h.textContent.trim()); const rows=[...t.querySelectorAll('tbody tr')].map(r=>{const cells=[...r.querySelectorAll('td')].map(c=>c.textContent.trim()); const obj={}; hdrs.forEach((h,i)=>obj[h]=cells[i]||''); return obj;}); const exp=document.querySelector('select')?.selectedOptions?.[0]?.text||''; return {symbol:" + symJ + ",expiration:exp,n:rows.length,chain:rows.slice(0,30)};})()";
+    const r = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
+    await close();
+    const res = r.result;
+    if (!res || !res.chain || res.chain.length === 0) return { ok: false, camofox_skip: true, error: "yahoo: sem opções no page" };
+    return { ok: true, engine: "camofox", source: "yahoo", symbol: res.symbol, expiration: res.expiration, n: res.n, chain: res.chain };
+  } catch (e) { return { ok: false, camofox_skip: true, error: String(e.message || e).slice(0, 120) }; }
+}
+
+server.tool("finance_options", "Cadeia de opções + IV + Volume + OI (Yahoo Finance / barchart).",
   { symbol: z.string().describe("Ticker (ex: NVDA)") },
   async ({ symbol }) => {
-    // ponytail: barchart options requer Premier subscription — camofox não resolve.
-    // opencli bridge é a única fonte. fast-fail se bridge morto.
-    if (!bridgeAlive()) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "Chrome bridge morto — finance_options requer opencli bridge (barchart options não disponível via camofox — requer Premier). Reabrir Chrome: opencli browser main open <url>.", bridge_down: true }) }] };
+    // v1.5.22: Yahoo Finance PRIMEIRO (gratuito, sem subscription) — fallback opencli barchart se bridge vivo
+    const cf = await camofoxYahooOptions(symbol);
+    if (cf.ok) return { content: [{ type: "text", text: JSON.stringify(cf) }] };
+    if (!bridgeAlive()) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "Yahoo sem opções e Chrome bridge morto", yahoo_error: cf.error, bridge_down: true }) }] };
     const d = await cachedOc(`options:${symbol}`, ["barchart", "options", symbol]);
     return { content: [{ type: "text", text: JSON.stringify(d) }] };
   });
