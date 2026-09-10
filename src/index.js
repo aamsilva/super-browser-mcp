@@ -456,7 +456,12 @@ async function camofoxTrending(limit = 10) {
   try {
     const { tab, mk, close } = await camofoxTab("https://x.com/explore/tabs/trending", { wait: 9000, dismissConsent: true });
     const limJ = JSON.stringify(limit || 10);
-    const expr = "(() => { const t = [...document.querySelectorAll('[data-testid=trend]')].slice(0," + limJ + ").map(el => { const lin = (el.innerText||'').split('\\n').map(s=>s.trim()).filter(Boolean); return { topico: (lin[0]||'').slice(0,60), categoria: (lin.find(l => l.includes('Trending')) || lin[2] || '').slice(0,60), posts: (lin[1]||'').slice(0,20) }; }); return { logado: !!document.querySelector('[data-testid=SideNav_AccountSwitcher_Button]'), err: document.body.innerText.includes('Something went wrong'), items: t.filter(x => x.topico) }; })()";
+    // v1.5.16 (F3): layout X (set-2026) = ["1", "·", "Categoria · Trending", "TÓPICO"]
+    // Inspeção DOM real 09-Set: linha 0 = ordinal, linha 1 = "·" separador,
+    // linha 2 = categoria ("Other competition · Trending"), linha 3 = topico.
+    // topico = 1ª linha não-ordinal/separador/contador/que não seja só "Trending"
+    // categoria = linha com "Trending", limpa do " · Trending".
+    const expr = "(() => { const isNum=/^\\d{1,3}$/.test.bind(/^\\d{1,3}$/); const isCnt=/(posts|tweets)/i; const t = [...document.querySelectorAll('[data-testid=trend]')].slice(0," + limJ + ").map(el => { const lin = (el.innerText||'').split(String.fromCharCode(10)).map(s=>s.trim()).filter(l => l && l !== '·' && !/^\\d{1,3}$/.test(l)); const catRaw = lin.find(l => l.includes('Trending')) || ''; const top = (lin.find(l => !l.includes('Trending') && !isCnt.test(l)) || '').slice(0,60); const cat = (catRaw ? catRaw.replace(/\s*·\s*Trending.*$/,'').trim() : '').slice(0,40) || 'Trending'; return { topico: top, categoria: cat, posts: (lin.find(l => isCnt.test(l)) || '').slice(0,20) }; }); return { logado: !!document.querySelector('[data-testid=SideNav_AccountSwitcher_Button]'), err: document.body.innerText.includes('Something went wrong'), items: t.filter(x => x.topico) }; })()";
     let res = {};
     for (let i = 0; i < 6; i++) {
       const r = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
