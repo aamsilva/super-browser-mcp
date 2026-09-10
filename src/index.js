@@ -343,9 +343,29 @@ server.tool("finance_quote", "Cotações e dados de ações (barchart). Suporta 
     return { content: [{ type: "text", text: JSON.stringify(symbols.length === 1 ? all[0] : all) }] };
   });
 
+// camofoxOptions (v1.5.20): cadeia de opções via camofox — evita BROWSER_CONNECT no opencli bridge
+async function camofoxOptions(sym) {
+  if (!(await camofoxEnsure())) return { ok: false, camofox_skip: true };
+  try {
+    const { tab, mk, close } = await camofoxTab("https://www.barchart.com/stocks/quotes/" + sym + "/options", { wait: 12000, dismissConsent: true });
+    const symJ = JSON.stringify(sym);
+    const expr = "(() => { const rows = [...document.querySelectorAll('table tbody tr')].slice(0,20).map(r => { const cells = [...r.querySelectorAll('td')].map(c => c.textContent.trim()); return cells.length >= 5 ? { exp: cells[0], type: cells[1], strike: cells[2], last: cells[3], bid: cells[4], ask: cells[5]||'', volume: cells[6]||'', oi: cells[7]||'' } : null; }).filter(Boolean); return { symbol: " + symJ + ", n: rows.length, chain: rows }; })()";
+    const r = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
+    await close();
+    const res = r.result || {};
+    if (!res.chain || res.chain.length === 0) return { ok: false, camofox_skip: true, error: "sem opções no page" };
+    return { ok: true, engine: "camofox", symbol: sym, n: res.n, chain: res.chain };
+  } catch (e) { return { ok: false, camofox_skip: true, error: String(e.message || e).slice(0, 120) }; }
+}
+
 server.tool("finance_options", "Cadeia de opções + greeks + IV (barchart).",
   { symbol: z.string().describe("Ticker (ex: NVDA)") },
   async ({ symbol }) => {
+    // v1.5.20: CAMOFOX PRIMEIRO — evita BROWSER_CONNECT no Chrome bridge
+    const cf = await camofoxOptions(symbol);
+    if (cf.ok) return { content: [{ type: "text", text: JSON.stringify(cf) }] };
+    // fallback opencli se bridge vivo
+    if (!bridgeAlive()) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "camofox sem opções e Chrome bridge morto", bridge_down: true }) }] };
     const d = await cachedOc(`options:${symbol}`, ["barchart", "options", symbol]);
     return { content: [{ type: "text", text: JSON.stringify(d) }] };
   });
@@ -383,40 +403,37 @@ server.tool("finance_defi", "Top DeFi por TVL (defillama).",
   });
 
 // ---- Sentimento social (autenticado via Chrome) ----
-// camofoxSentiment (v1.5.6): X/Twitter search via camofox (cookies importados,
-// x.com autenticado) — substitui o bridge nos use cases de sentimento.
+// camofoxSentiment (v1.5.20): X/Twitter search via camofox — timeout 35s max (evita MCP timeout 60s)
 async function camofoxSentiment(query, limit = 5) {
   if (!(await camofoxEnsure())) return { ok: false, camofox_skip: true };
+  const deadline = Date.now() + 35000; // 35s max
   try {
     const { tab, mk, close } = await camofoxTab("https://x.com/search?q=" + encodeURIComponent(query) + "&f=live", { wait: 9000, dismissConsent: true });
     const limJ = JSON.stringify(limit || 5);
     const expr = "(() => { const arts = [...document.querySelectorAll('article[data-testid=\"tweet\"]')].slice(0," + limJ + ").map(a => ({ autor: ((a.querySelector('a[href^=\"/\"][role=\"link\"] span')||a.querySelector('a[href^=\"/\"] span')||{}).textContent||'').trim().slice(0,40), texto: ((a.querySelector('[data-testid=\"tweetText\"]')||{}).textContent||'').trim().slice(0,300) })); return { logado: !!document.querySelector('[data-testid=\"SideNav_AccountSwitcher_Button\"]'), err: document.body.innerText.includes('Something went wrong'), arts: arts.filter(t => t.texto) }; })()";
-    // v1.5.6 fix: polling — a timeline SPA renderiza depois da rede idle; 6 tentativas × 2s;
-    // "Something went wrong" (SPA error em sessão restaurada) → reload da tab e re-poll
     let res = {};
     const searchUrl = "https://x.com/search?q=" + encodeURIComponent(query) + "&f=live";
-    for (let i = 0; i < 6; i++) {
+    // Poll 1: live search — 4 polls × 2s max (reduced from 6)
+    for (let i = 0; i < 4 && Date.now() < deadline; i++) {
       const r = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
       res = r.result || {};
       if (res.arts && res.arts.length > 0) break;
-      if (res.err) { await mk("POST", "/tabs/" + tab + "/navigate", { userId: CFG.camofoxUser, url: searchUrl }); await mk("POST", "/tabs/" + tab + "/wait", { userId: CFG.camofoxUser, timeout: 8000 }).catch(() => {}); }
+      if (res.err) { await mk("POST", "/tabs/" + tab + "/navigate", { userId: CFG.camofoxUser, url: searchUrl }); await mk("POST", "/tabs/" + tab + "/wait", { userId: CFG.camofoxUser, timeout: 6000 }).catch(() => {}); }
       await new Promise(r2 => setTimeout(r2, 2000));
     }
-    await close();
-    if (!res.logado) return { ok: false, camofox_skip: true, error: "x.com não autenticado no camofox" };
-    // v1.5.7: live vazio → re-pesquisar em "Top" (sem f=live — tem sempre conteúdo)
-    if (!res.arts || res.arts.length === 0) {
+    // Poll 2: "Top" search (sem f=live) — only if live empty and time remains
+    if ((!res.arts || res.arts.length === 0) && Date.now() < deadline) {
       await mk("POST", "/tabs/" + tab + "/navigate", { userId: CFG.camofoxUser, url: "https://x.com/search?q=" + encodeURIComponent(query) });
-      await mk("POST", "/tabs/" + tab + "/wait", { userId: CFG.camofoxUser, timeout: 8000 }).catch(() => {});
-      for (let i = 0; i < 4; i++) {
+      await mk("POST", "/tabs/" + tab + "/wait", { userId: CFG.camofoxUser, timeout: 6000 }).catch(() => {});
+      for (let i = 0; i < 3 && Date.now() < deadline; i++) {
         const r2 = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
         res = r2.result || {};
         if (res.arts && res.arts.length > 0) break;
         await new Promise(r3 => setTimeout(r3, 2000));
       }
     }
-    // B2: distinguir no-new-items vs fetch-error — stale de 0 items é válido
-    // quando o X não tem resultados para a query (não é erro de rede/SOUP).
+    await close();
+    if (!res.logado) return { ok: false, camofox_skip: true, error: "x.com não autenticado no camofox" };
     const emptyReason = (res.arts || []).length === 0
       ? (res.err ? "fetch_error" : "no_results")
       : null;
