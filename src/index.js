@@ -299,11 +299,9 @@ server.tool("site_search", "Pesquisa num site específico via opencli (adapter).
   });
 
 // ---- Finance / Trading (subskill trading-search) ----
-// camofoxQuote (v1.5.21): cotação barchart via camofox — debug logging
+// camofoxQuote (v1.5.21): cotação barchart via camofox — 7.5s vs 21.6s opencli (medido)
 async function camofoxQuote(sym) {
-  const t0 = Date.now();
-  const ensureOk = await camofoxEnsure();
-  if (!ensureOk) { console.error("[camofoxQuote] camofoxEnsure FAILED"); return { ok: false, camofox_skip: true }; }
+  if (!(await camofoxEnsure())) return { ok: false, camofox_skip: true };
   try {
     const { tab, mk, close } = await camofoxTab("https://www.barchart.com/stocks/quotes/" + sym, { wait: 12000, dismissConsent: true });
     const symJ = JSON.stringify(sym);
@@ -312,10 +310,9 @@ async function camofoxQuote(sym) {
     const r = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
     await close();
     const res = r.result || {};
-    if (!res.price) { console.error("[camofoxQuote] sem preço. r:", JSON.stringify(r).slice(0,300), "res:", JSON.stringify(res).slice(0,200)); return { ok: false, camofox_skip: true, error: "sem preço no page" }; }
-    console.error("[camofoxQuote] OK", sym, res.price, Date.now()-t0+"ms");
+    if (!res.price) return { ok: false, camofox_skip: true, error: "sem preço no page" };
     return { ok: true, engine: "camofox", name: res.name, price: res.price, symbol: sym };
-  } catch (e) { console.error("[camofoxQuote] CATCH:", String(e.message||e).slice(0,200)); return { ok: false, camofox_skip: true, error: String(e.message || e).slice(0, 120) }; }
+  } catch (e) { return { ok: false, camofox_skip: true, error: String(e.message || e).slice(0, 120) }; }
 }
 
 server.tool("finance_quote", "Cotações e dados de ações (barchart). Suporta BATCH: symbols separados por vírgula (ex: NVDA,AAPL,MSFT) — devolve array.",
@@ -346,28 +343,12 @@ server.tool("finance_quote", "Cotações e dados de ações (barchart). Suporta 
   });
 
 // camofoxOptions (v1.5.20): cadeia de opções via camofox — evita BROWSER_CONNECT no opencli bridge
-async function camofoxOptions(sym) {
-  if (!(await camofoxEnsure())) return { ok: false, camofox_skip: true };
-  try {
-    const { tab, mk, close } = await camofoxTab("https://www.barchart.com/stocks/quotes/" + sym + "/options", { wait: 12000, dismissConsent: true });
-    const symJ = JSON.stringify(sym);
-    const expr = "(() => { const rows = [...document.querySelectorAll('table tbody tr')].slice(0,20).map(r => { const cells = [...r.querySelectorAll('td')].map(c => c.textContent.trim()); return cells.length >= 5 ? { exp: cells[0], type: cells[1], strike: cells[2], last: cells[3], bid: cells[4], ask: cells[5]||'', volume: cells[6]||'', oi: cells[7]||'' } : null; }).filter(Boolean); return { symbol: " + symJ + ", n: rows.length, chain: rows }; })()";
-    const r = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
-    await close();
-    const res = r.result || {};
-    if (!res.chain || res.chain.length === 0) return { ok: false, camofox_skip: true, error: "sem opções no page" };
-    return { ok: true, engine: "camofox", symbol: sym, n: res.n, chain: res.chain };
-  } catch (e) { return { ok: false, camofox_skip: true, error: String(e.message || e).slice(0, 120) }; }
-}
-
 server.tool("finance_options", "Cadeia de opções + greeks + IV (barchart).",
   { symbol: z.string().describe("Ticker (ex: NVDA)") },
   async ({ symbol }) => {
-    // v1.5.20: CAMOFOX PRIMEIRO — evita BROWSER_CONNECT no Chrome bridge
-    const cf = await camofoxOptions(symbol);
-    if (cf.ok) return { content: [{ type: "text", text: JSON.stringify(cf) }] };
-    // fallback opencli se bridge vivo
-    if (!bridgeAlive()) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "camofox sem opções e Chrome bridge morto", bridge_down: true }) }] };
+    // ponytail: barchart options requer Premier subscription — camofox não resolve.
+    // opencli bridge é a única fonte. fast-fail se bridge morto.
+    if (!bridgeAlive()) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "Chrome bridge morto — finance_options requer opencli bridge (barchart options não disponível via camofox — requer Premier). Reabrir Chrome: opencli browser main open <url>.", bridge_down: true }) }] };
     const d = await cachedOc(`options:${symbol}`, ["barchart", "options", symbol]);
     return { content: [{ type: "text", text: JSON.stringify(d) }] };
   });
@@ -849,7 +830,7 @@ async function camofoxTab(url, { wait = 10000, dismissConsent = true } = {}) {
     body: b ? JSON.stringify(b) : undefined, signal: AbortSignal.timeout(60000) }).then(r => r.json());
   const r = await mk("POST", "/tabs", { userId: CFG.camofoxUser, sessionKey: "mcp-" + Date.now(), url });
   const tab = r.tabId;
-  if (!tab) { console.error("[camofoxTab] sem tabId:", JSON.stringify(r).slice(0,200)); throw new Error("camofox: sem tabId (" + JSON.stringify(r).slice(0, 120) + ")"); }
+  if (!tab) throw new Error("camofox: sem tabId (" + JSON.stringify(r).slice(0, 120) + ")");
   await mk("POST", `/tabs/${tab}/wait`, { userId: CFG.camofoxUser, timeout: wait, waitForNetwork: true, dismissConsent }).catch(() => {});
   const close = () => mk("DELETE", `/tabs/${tab}?userId=${CFG.camofoxUser}`).catch(() => {});
   return { tab, mk, close };
