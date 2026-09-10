@@ -311,7 +311,7 @@ async function camofoxQuote(sym) {
     const r = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
     await close();
     const res = r.result || {};
-    if (!res.price) { console.error("[camofoxQuote] sem preço:", JSON.stringify(res).slice(0,200)); return { ok: false, camofox_skip: true, error: "sem preço no page" }; }
+    if (!res.price) { console.error("[camofoxQuote] sem preço. r:", JSON.stringify(r).slice(0,300), "res:", JSON.stringify(res).slice(0,200)); return { ok: false, camofox_skip: true, error: "sem preço no page" }; }
     console.error("[camofoxQuote] OK", sym, res.price, Date.now()-t0+"ms");
     return { ok: true, engine: "camofox", name: res.name, price: res.price, symbol: sym };
   } catch (e) { console.error("[camofoxQuote] CATCH:", String(e.message||e).slice(0,200)); return { ok: false, camofox_skip: true, error: String(e.message || e).slice(0, 120) }; }
@@ -848,7 +848,7 @@ async function camofoxTab(url, { wait = 10000, dismissConsent = true } = {}) {
     body: b ? JSON.stringify(b) : undefined, signal: AbortSignal.timeout(60000) }).then(r => r.json());
   const r = await mk("POST", "/tabs", { userId: CFG.camofoxUser, sessionKey: "mcp-" + Date.now(), url });
   const tab = r.tabId;
-  if (!tab) throw new Error("camofox: sem tabId (" + JSON.stringify(r).slice(0, 120) + ")");
+  if (!tab) { console.error("[camofoxTab] sem tabId:", JSON.stringify(r).slice(0,200)); throw new Error("camofox: sem tabId (" + JSON.stringify(r).slice(0, 120) + ")"); }
   await mk("POST", `/tabs/${tab}/wait`, { userId: CFG.camofoxUser, timeout: wait, waitForNetwork: true, dismissConsent }).catch(() => {});
   const close = () => mk("DELETE", `/tabs/${tab}?userId=${CFG.camofoxUser}`).catch(() => {});
   return { tab, mk, close };
