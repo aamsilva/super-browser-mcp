@@ -262,6 +262,7 @@ server.tool("site_search", "Pesquisa num site específico via opencli (adapter).
     // comandos posicionais (protocol, transcript, inbox) rejeitam a flag.
     const LISTING_CMDS = new Set(["search", "news", "trending", "hot", "top", "best", "protocols", "timeline", "feed", "subscriptions", "history", "repos", "prs", "issues", "releases", "commits", "gists", "stars"]);
     if (limit && LISTING_CMDS.has(command)) args.push("--limit", String(limit));
+    // v1.5.27: BROWSER_SITES fast-fail acima (Chrome desactivado). Sites API-only passam.
     const d = await cachedOc(`site:${site}:${command}:${arg || query || ""}`, args);
     // P1-1 fix (feedback T2 15-Ago): youtube channel devolve field/value — normalizar
     // para objeto estruturado com channelId direto (news-intel RSS dinâmico sem parse).
@@ -325,10 +326,8 @@ server.tool("finance_quote", "Cotações e dados de ações (barchart). Suporta 
     const results = await Promise.all(symbols.map(sym => cached("quote:" + sym, null, async () => {
       const cf = await camofoxQuote(sym);
       if (cf.ok) return [cf];
-      // v1.5.10: fallback opencli SÓ com bridge vivo (evita 91s BROWSER_CONNECT)
-      if (!bridgeAlive()) return [{ ok: false, error: "camofox sem preço e Chrome bridge morto", bridge_down: true }];
-      try { return await cachedOc("quote:" + sym, ["barchart", "quote", sym]); }
-      catch { return [{ ok: false, error: "quote falhou (camofox + opencli)" }]; }
+      // v1.5.27: SEM FALLBACK OPENCLI — evita lançar Chrome (3GB). camofox é a única fonte.
+      return [{ ok: false, error: "camofox sem preço", engine: "camofox" }];
     })));
     const all = results.flatMap(d => (Array.isArray(d) ? d : [d]));
     // P1 fix (feedback T1 15-Ago): o adapter barchart devolve marketCap em MILHARES
@@ -365,12 +364,11 @@ async function camofoxYahooOptions(sym) {
 server.tool("finance_options", "Cadeia de opções + IV + Volume + OI (Yahoo Finance / barchart).",
   { symbol: z.string().describe("Ticker (ex: NVDA)") },
   async ({ symbol }) => {
-    // v1.5.22: Yahoo Finance PRIMEIRO (gratuito, sem subscription) — fallback opencli barchart se bridge vivo
+    // v1.5.22: Yahoo Finance PRIMEIRO (gratuito, sem subscription)
     const cf = await camofoxYahooOptions(symbol);
     if (cf.ok) return { content: [{ type: "text", text: JSON.stringify(cf) }] };
-    if (!bridgeAlive()) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "Yahoo sem opções e Chrome bridge morto", yahoo_error: cf.error, bridge_down: true }) }] };
-    const d = await cachedOc(`options:${symbol}`, ["barchart", "options", symbol]);
-    return { content: [{ type: "text", text: JSON.stringify(d) }] };
+    // v1.5.27: SEM FALLBACK OPENCLI — evita lançar Chrome (3GB).
+    return { content: [{ type: "text", text: JSON.stringify({ ok: false, engine: "camofox", yahoo_error: cf.error, error: "Yahoo sem opções e sem fallback opencli (Chrome desactivado)." }) }] };
   });
 
 server.tool("finance_crypto", "Preço crypto (binance).",
@@ -517,20 +515,8 @@ server.tool("social_sentiment", "Sentimento social de um ticker (X/Twitter auten
     if (cf.ok && cf.items && cf.items.length > 0) {
       return { content: [{ type: "text", text: JSON.stringify({ ok: true, engine: "camofox", n: cf.n, items: cf.items }) }] };
     }
-    if (!bridgeAlive()) {
-      return { content: [{ type: "text", text: JSON.stringify({ ok: false, bridge_down: true, camofox_error: cf.error, hint: "Chrome não corre; social_sentiment usa o bridge. Reabrir: opencli browser main open <url>." }) }] };
-    }
-    // P2-3 fix (feedback T2 15-Ago): connection closed intermitente no 1º try (~1/5) —
-    // retry 1x antes de falhar.
-    let d;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        d = oc(["twitter", "search", query, "--limit", String(limit)]);
-        if (d && d.ok !== false && !d.error) break;
-      } catch { /* retry */ }
-    }
-    if (!d) d = { ok: false, error: "twitter search falhou 2x (connection closed)" };
-    return { content: [{ type: "text", text: JSON.stringify(d) }] };
+    // v1.5.27: SEM FALLBACK OPENCLI — evita lançar Chrome (3GB). camofox é a única fonte.
+    return { content: [{ type: "text", text: JSON.stringify({ ok: false, engine: "camofox", camofox_error: cf.error, hint: "camofox indisponível para social_sentiment. Sem fallback opencli (Chrome desactivado)." }) }] };
   });
 
 // ---- Browser genérico (qualquer site, Chrome bridge autenticado) ----
@@ -544,13 +530,8 @@ server.tool("browser_browse", "Navega para qualquer URL e extrai conteúdo. CHAI
     const d = await cached(`browse:${url}`, null, async () => {
       const cf = await camofoxBrowse(url);
       if (cf.ok) return cf;
-      try {
-        // P2 fix (feedback T1 15-Ago): amazon order-history demora >15s a renderizar.
-        // Timeout 15s → 30s antes de cair no fallback CloakBrowser.
-        return oc(["web", "read", "--url", url], { timeout: 30000 });
-      } catch {
-        return null; // sinaliza fallback
-      }
+      // v1.5.27: SEM OPENCLI — evita lançar Chrome (3GB). CloakBrowser como fallback direto.
+      return null;
     });
     let result = d;
     if (!d || d.ok === false) {
@@ -1150,39 +1131,8 @@ server.tool("web_search", "Pesquisa web: Google (opencli, autenticado). Devolve 
           return { engine: "camofox", results: cf.results.map(r => ({ title: r.title || "", url: r.url || "", snippet: (r.snippet || "").slice(0, 200) })) };
         }
       } catch { /* fallback opencli */ }
-      // v1.5.5: fallback opencli SÓ se o bridge estiver vivo (Chrome morto → não
-      // pendurar 45-90s; devolver o erro do camofox imediatamente).
-      if (!bridgeAlive()) return { ok: false, degraded: true, bridge_down: true, error: "camofox sem resultados e Chrome bridge morto", engine: "camofox" };
-      // RETRY com query simplificada (16-Ago, erro observado): queries compostas
-      // (ex "Ukraine Russia war news August 16 2026 Moscow drones Wildberries")
-      // podem dar vazio no google — a 2ª tentativa remove palavras-chave genéricas
-      // (datas, números, 'news', 'update') e re-tenta com as palavras-chave reais.
-      const simplify = (q) => {
-        const words = q.split(/\s+/).filter(w => !/^(news|update|today|now|latest)$/i.test(w) && !/^\d+[a-z]*$/i.test(w));
-        // se o filtro removeu palavras, usar o filtrado (mesmo que ≤3); só corta o
-        // excesso quando ainda há muitas palavras-chave
-        const cleaned = words.join(" ");
-        if (cleaned !== q && words.length >= 1) return words.length > 3 ? words.slice(0, Math.max(3, Math.ceil(words.length / 2))).join(" ") : cleaned;
-        return words.length > 3 ? words.slice(0, 3).join(" ") : q;
-      };
-      const attemptSearch = (q) => {
-        const g = oc(["google", "search", q, "--limit", String(limit)]);
-        return (Array.isArray(g) ? g : []).map(r => ({
-          title: r.title || "", url: r.url || "", snippet: (r.snippet || r.content || "").slice(0, 200),
-        }));
-      };
-      try {
-        let simplified = null;
-        let items = attemptSearch(query);
-        if (items.length === 0) {
-          simplified = simplify(query);
-          if (simplified !== query) items = attemptSearch(simplified);
-        }
-        if (items.length > 0) return { engine: "google", results: items, simplified: simplified !== null && simplified !== query };
-        return { ok: false, degraded: true, error: "google sem resultados", engine: "google" };
-      } catch (e) {
-        return { ok: false, degraded: true, error: `google falhou: ${(e.message || "").slice(0, 120)}`, engine: "google" };
-      }
+      // v1.5.27: SEM FALLBACK OPENCLI — camofox já tem Google + Bing. Sem Chrome.
+      return { ok: false, degraded: true, error: "camofox sem resultados (google+bing)", engine: "camofox" };
     });
     return { content: [{ type: "text", text: JSON.stringify(cachedRes) }] };
   });
@@ -1191,18 +1141,11 @@ server.tool("web_search", "Pesquisa web: Google (opencli, autenticado). Devolve 
 server.tool("health", "Estado do super-browser-mcp + conectividade (bridge + camofox).",
   {},
   async () => {
-    // v1.5.4: fast-fail — Chrome morto → bridge_auth:"down" imediato (sem pendurar
-    // 90s no whoami). O estado camofox também é reportado.
-    if (!bridgeAlive()) {
-      return { content: [{ type: "text", text: JSON.stringify({
-        ok: true, bridge_auth: "down", degraded: true,
-        camofox: await camofoxHealth() ? "up" : "down",
-        version: pkg.version, time: new Date().toISOString(),
-      }) }] };
-    }
-    const bridge = oc(["youtube", "whoami"]);
+    // v1.5.27: SEM OPENCLI — bridge_auth detectado por bridgeAlive() (pgrep Chrome).
+    // YouTube whoami removido — evita lançar Chrome (3GB).
+    const bridgeUp = bridgeAlive();
     return { content: [{ type: "text", text: JSON.stringify({
-      ok: true, bridge_auth: bridge && bridge.logged_in ? "logged_in" : "unknown",
+      ok: true, bridge_auth: bridgeUp ? "up" : "down", degraded: !bridgeUp,
       camofox: await camofoxHealth() ? "up" : "down",
       version: pkg.version, time: new Date().toISOString(),
     }) }] };
