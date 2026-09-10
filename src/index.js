@@ -251,7 +251,7 @@ server.tool("site_search", "Pesquisa num site específico via opencli (adapter).
     }
     // v1.5.5: fast-fail — sites cujos adapters usam o bridge browser (Chrome morto
     // = 91s pendurado em BROWSER_CONNECT). Sites API-only (google/defillama) passam.
-    const BROWSER_SITES = new Set(["twitter", "amazon", "instagram", "facebook", "linkedin", "barchart"]);
+    const BROWSER_SITES = new Set(["twitter", "amazon", "instagram", "facebook", "reddit", "linkedin", "barchart"]);
     if (BROWSER_SITES.has(site) && !bridgeAlive()) {
       return { content: [{ type: "text", text: JSON.stringify({ ok: false, bridge_down: true, site, hint: "Adapter usa o bridge Chrome (morto). Reabrir: opencli browser main open <url>." }) }] };
     }
@@ -901,40 +901,24 @@ function decodeGotoUrl(u) {
 
 async function camofoxSearch(query, num = 10) {
   if (!(await camofoxEnsure())) return { ok: false, error: "camofox indisponível" };
-  try {
-    const { tab, mk, close } = await camofoxTab(`https://www.google.com/search?q=${encodeURIComponent(query)}&num=${num}`);
-    const snap = (await mk("GET", `/tabs/${tab}/snapshot?userId=${CFG.camofoxUser}`)).snapshot || "";
-    await close();
-    if (snap.includes("google.com/sorry") || snap.includes("unusual traffic"))
-      return { ok: false, error: "google rate-limit (/sorry/) — reduzir volume ou aguardar" };
-    // E1 (10-Set): cleaning defensivo no parser MCP — o server já limpa, mas se
-    // servir versão antiga não deixamos títulos "1:44YouTube · ..." ou snippets
-    // vazios chegarem ao consumer. Também resolve o viés-vídeo (F1: 4/6 youtube).
-    const cleanTitle = (s) => s
-      .replace(/^\d{1,2}:\d{2}(?::\d{2})?\s*/, "")
-      .replace(/^(YouTube|Instagram|Facebook|TikTok|X|Twitter)\s*·\s*/i, "")
-      .trim();
-    const baseDomain = (u) => {
-      try { return (new URL(u).hostname.replace(/^www\./, "").match(/([^.]+)\.[^.]+$/) || [])[1] || ""; }
-      catch { return ""; }
-    };
-    const results = [];
-    const seenUrl = new Set();
-    const seenDomain = new Map();
+  const cleanTitle = (s) => s
+    .replace(/^\d{1,2}:\d{2}(?::\d{2})?\s*/, "")
+    .replace(/^(YouTube|Instagram|Facebook|TikTok|X|Twitter)\s*·\s*/i, "")
+    .trim();
+  const baseDomain = (u) => {
+    try { return (new URL(u).hostname.replace(/^www\./, "").match(/([^.]+)\.[^.]+$/) || [])[1] || ""; }
+    catch { return ""; }
+  };
+  const parseGoogle = (snap) => {
+    const results = []; const seenUrl = new Set(); const seenDomain = new Map();
     for (const b of snap.split(/(?=- link )/)) {
       const t = b.match(/- link "([^"]{5,120})" \[e\d+\]:\s*\n\s*- \/url: (https?:\/\/[^\s]+)/);
       if (!t) continue;
-      // v1.5.1 fix: sessão autenticada devolve URLs via wrapper google.com/goto (302
-      // p/ destino) — NÃO filtrar por "google." ou perde-se TUDO. Filtrar só a própria SERP.
       if (/google\.[a-z.]+\/search|accounts\.google|policies\.google/.test(t[2])) continue;
-      // v1.5.6: descodificar goto → URL directa (qualidade = opencli)
       const url = decodeGotoUrl(t[2]);
-      if (seenUrl.has(url)) continue;         // dedupe por URL (v1.5.6)
-      // E1 diversidade: máx 2 por domínio-base (corta carousel de vídeos do mesmo site)
+      if (seenUrl.has(url)) continue;
       const dom = baseDomain(url);
       if ((seenDomain.get(dom) || 0) >= 2) continue;
-      // E1 snippet fallback: se o server não emitiu "- text:", extrai da primeira
-      // linha de descrição rolada no bloco (nunca vazio se o bloco trouxer texto)
       let snippet = (b.match(/- text: ([^\n]+)/) || [])[1] || "";
       if (!snippet) {
         const rest = b.replace(/^- link "[^"]+" \[e\d+\]:\s*\n\s*- \/url: [^\n]+\n?/, "").trim();
@@ -942,14 +926,44 @@ async function camofoxSearch(query, num = 10) {
         snippet = lines.find(l => l.length > 15 && !l.startsWith("http")) || "";
       }
       seenUrl.add(url); seenDomain.set(dom, (seenDomain.get(dom) || 0) + 1);
-      results.push({
-        title: cleanTitle(t[1]), url,
-        cite: (b.match(/- cite: ([^\n]+)/) || [])[1] || "",
-        snippet: (snippet || "").slice(0, 200),
-      });
+      results.push({ title: cleanTitle(t[1]), url, cite: (b.match(/- cite: ([^\n]+)/) || [])[1] || "", snippet: (snippet || "").slice(0, 200) });
     }
-    return { ok: true, query, engine: "camofox", n: results.length, results: results.slice(0, num) };
-  } catch (e) { return { ok: false, error: String(e.message || e).slice(0, 200) }; }
+    return results;
+  };
+  const parseBing = (snap) => {
+    const results = []; const seenUrl = new Set();
+    for (const b of snap.split(/(?=- link )/)) {
+      const t = b.match(/- link "([^"]{5,120})" \[e\d+\]:\s*\n\s*- \/url: (https?:\/\/[^\s]+)/);
+      if (!t) continue;
+      if (/bing\.com| microsoft\.com/.test(t[2])) continue;
+      const url = decodeGotoUrl(t[2]);
+      if (seenUrl.has(url)) continue;
+      let snippet = (b.match(/- text: ([^\n]+)/) || [])[1] || "";
+      seenUrl.add(url);
+      results.push({ title: cleanTitle(t[1]), url, snippet: (snippet || "").slice(0, 200) });
+    }
+    return results;
+  };
+  // 1) Google primeiro
+  try {
+    const { tab, mk, close } = await camofoxTab(`https://www.google.com/search?q=${encodeURIComponent(query)}&num=${num}`);
+    const snap = (await mk("GET", `/tabs/${tab}/snapshot?userId=${CFG.camofoxUser}`)).snapshot || "";
+    await close();
+    const isRateLimit = snap.includes("google.com/sorry") || snap.includes("unusual traffic") || snap.includes("detected unusual");
+    const googleResults = parseGoogle(snap);
+    if (!isRateLimit && googleResults.length > 0)
+      return { ok: true, query, engine: "camofox-google", n: googleResults.length, results: googleResults.slice(0, num) };
+  } catch { /* fallback Bing */ }
+  // 2) Bing fallback
+  try {
+    const { tab, mk, close } = await camofoxTab(`https://www.bing.com/search?q=${encodeURIComponent(query)}&count=${num}`);
+    const snap = (await mk("GET", `/tabs/${tab}/snapshot?userId=${CFG.camofoxUser}`)).snapshot || "";
+    await close();
+    const bingResults = parseBing(snap);
+    if (bingResults.length > 0)
+      return { ok: true, query, engine: "camofox-bing", n: bingResults.length, results: bingResults.slice(0, num) };
+  } catch { /* both failed */ }
+  return { ok: false, error: "google+bing sem resultados" };
 }
 
 // camofoxAct (v1.5.1): browser_act via camofox — stateful (open→fill→click na
