@@ -307,7 +307,8 @@ async function camofoxQuote(sym) {
   try {
     const { tab, mk, close } = await camofoxTab("https://www.barchart.com/stocks/quotes/" + sym, { wait: 12000, dismissConsent: true });
     const symJ = JSON.stringify(sym);
-    const expr = "(() => { const sels=['.price','[data-test=last-price]','span[data-last-normal-market-timestamp]','.last-price','.symbol-last-price']; let price=''; for(const s of sels){ const el=document.querySelector(s); if(el){ price=el.textContent.trim().split(/\\s+/)[0]; break; } } const t=document.title; const nm=t.replace(/ - Barchart.com.*$/,'').trim(); return { name: (nm && nm.toLowerCase().indexOf(" + sym.toLowerCase() + ") === -1 ? nm : " + symJ + "), price }; })()";
+    const symLow = JSON.stringify(sym.toLowerCase());
+    const expr = "(() => { const sels=['.price','[data-test=last-price]','span[data-last-normal-market-timestamp]','.last-price','.symbol-last-price']; let price=''; for(const s of sels){ const el=document.querySelector(s); if(el){ price=el.textContent.trim().split(/\\s+/)[0]; break; } } const t=document.title; const nm=t.replace(/ - Barchart.com.*$/,'').trim(); return { name: (nm && nm.toLowerCase().indexOf(" + symLow + ") === -1 ? nm : " + symJ + "), price }; })()";
     const r = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
     await close();
     const res = r.result || {};
