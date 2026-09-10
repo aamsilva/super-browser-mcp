@@ -299,21 +299,22 @@ server.tool("site_search", "Pesquisa num site específico via opencli (adapter).
   });
 
 // ---- Finance / Trading (subskill trading-search) ----
-// camofoxQuote (v1.5.3): cotação barchart via camofox — 7.5s vs 21.6s opencli (medido)
+// camofoxQuote (v1.5.21): cotação barchart via camofox — debug logging
 async function camofoxQuote(sym) {
-  if (!(await camofoxEnsure())) return { ok: false, camofox_skip: true };
+  const t0 = Date.now();
+  const ensureOk = await camofoxEnsure();
+  if (!ensureOk) { console.error("[camofoxQuote] camofoxEnsure FAILED"); return { ok: false, camofox_skip: true }; }
   try {
     const { tab, mk, close } = await camofoxTab("https://www.barchart.com/stocks/quotes/" + sym, { wait: 12000, dismissConsent: true });
     const symJ = JSON.stringify(sym);
-    // B3 fix (10-Set): selectors actualizados — barchart removeu data-last-normal-market-timestamp.
-    // .price devolve "207.25 +7.92%" — extrair só o preço (número antes do espaço).
     const expr = "(() => { const sels=['.price','[data-test=last-price]','span[data-last-normal-market-timestamp]','.last-price','.symbol-last-price']; let price=''; for(const s of sels){ const el=document.querySelector(s); if(el){ price=el.textContent.trim().split(/\\s+/)[0]; break; } } const t=document.title; const nm=t.replace(/ - Barchart.com.*$/,'').trim(); return { name: (nm && nm.toLowerCase().indexOf(" + sym.toLowerCase() + ") === -1 ? nm : " + symJ + "), price }; })()";
     const r = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
     await close();
     const res = r.result || {};
-    if (!res.price) return { ok: false, camofox_skip: true, error: "sem preço no page" };
+    if (!res.price) { console.error("[camofoxQuote] sem preço:", JSON.stringify(res).slice(0,200)); return { ok: false, camofox_skip: true, error: "sem preço no page" }; }
+    console.error("[camofoxQuote] OK", sym, res.price, Date.now()-t0+"ms");
     return { ok: true, engine: "camofox", name: res.name, price: res.price, symbol: sym };
-  } catch (e) { return { ok: false, camofox_skip: true, error: String(e.message || e).slice(0, 120) }; }
+  } catch (e) { console.error("[camofoxQuote] CATCH:", String(e.message||e).slice(0,200)); return { ok: false, camofox_skip: true, error: String(e.message || e).slice(0, 120) }; }
 }
 
 server.tool("finance_quote", "Cotações e dados de ações (barchart). Suporta BATCH: symbols separados por vírgula (ex: NVDA,AAPL,MSFT) — devolve array.",
