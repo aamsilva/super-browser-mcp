@@ -56,6 +56,39 @@ const CFG = loadConfig();
 
 const server = new McpServer({ name: "super-browser", version: pkg.version });
 
+// ---- §33 SSRF guard: bloquear destinos internos a partir de URLs fornecidos pelo
+// LLM (metas podem vir de páginas browsadas). Escapes: SUPER_BROWSER_ALLOW_PRIVATE=1.
+const PRIVATE_RE = /^(file|ftp|unix|chrome|about|blob|data:)/i;
+function urlToIp(host) {
+  return new Promise(r => {
+    require("dns").lookup(host.replace(/^.+@/, ""), { all: true }, (e, a) => r(e ? null : (Array.isArray(a) ? a.map(x => x.address).join(",") : a)));
+  });
+}
+function sanitizeUrl(raw) {
+  let u;
+  try { u = new URL(raw); } catch { return { ok: false, code: "INVALID_ARGUMENT", error: "URL inválida: " + String(raw).slice(0, 80) }; }
+  if (!/^https?:$/.test(u.protocol)) return { ok: false, code: "SECURITY_BLOCKED", error: `esquema não permitido: ${u.protocol} (só http/https)` };
+  const h = u.hostname.toLowerCase();
+  const isLocal = h === "localhost" || /^\d+\.\d+\.\d+\.\d+$/.test(h) && (/^0\./.test(h) || /^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h) || /^172\.(1[6-9]|2\d|3[01])\./.test(h) || /^169\.254\./.test(h)) || h === "::1" || h === "[::1]";
+  if (isLocal && process.env.SUPER_BROWSER_ALLOW_PRIVATE !== "1") {
+    return { ok: false, code: "SECURITY_BLOCKED", error: `destino privado/loopback bloqueado (SSRF): ${h}. Definir SUPER_BROWSER_ALLOW_PRIVATE=1 se intencional.` };
+  }
+  return { ok: true, url: u.toString() };
+}
+async function guardUrl(raw) {
+  const s = sanitizeUrl(raw);
+  if (!s.ok) return s;
+  // hostname pode ser um DNS interno que resolva p/ RFC1918 — resolver e verificar
+  if (/^[a-z]/i.test(new URL(s.url).hostname)) {
+    const ip = await urlToIp(new URL(s.url).hostname);
+    if (ip && !process.env.SUPER_BROWSER_ALLOW_PRIVATE) {
+      const p = sanitizeUrl("http://" + ip);
+      if (!p.ok) return { ok: false, code: "SECURITY_BLOCKED", error: `${new URL(s.url).hostname} → ${ip} é destino privado (SSRF). SUPER_BROWSER_ALLOW_PRIVATE=1 se intencional.` };
+    }
+  }
+  return s;
+}
+
 // ---- Cache com TTL por categoria (user 16-Ago: avaliar volatilidade × criticidade × custo).
 //      TTL NÃO é fixo — depende da natureza do dado e do custo de refresh:
 //        • finance_quote: preço muda (volátil) + usado em trading (crítico) + refresh 13.7s caro
@@ -520,6 +553,9 @@ server.tool("social_sentiment", "Sentimento social de um ticker (X/Twitter auten
 server.tool("browser_browse", "Navega para qualquer URL e extrai conteúdo. CHAIN v1.5.28: camofox (anti-detection headless) → CloakBrowser (stealth legado). Passa Cloudflare/anti-bot.",
   { url: z.string().describe("URL completo") },
   async ({ url }) => {
+    const g = await guardUrl(url);
+    if (!g.ok) return { content: [{ type: "text", text: JSON.stringify({ ok: false, code: g.code, error: g.error }) }] };
+    url = g.url;
     // web read usa --url (flag, não posicional) e não aceita --window.
     // O opencli guarda o markdown em web-articles/<site>/<site>.md (cwd ou ~).
     // v1.5.0: camofox PRIMEIRO (stealth+auth, sem tocar no bridge Chrome que
@@ -588,6 +624,11 @@ server.tool("browser_act", `Executa uma ação de automação browser na sessão
       for (const alias of ["code", "expression", "script"]) {
         if (args[alias] !== undefined) { args.js = args[alias]; delete args[alias]; break; }
       }
+    }
+    if ((action === "open" || action === "tab") && args.url) {
+      const g = await guardUrl(args.url);
+      if (!g.ok) return { content: [{ type: "text", text: JSON.stringify({ ok: false, code: g.code, error: g.error }) }] };
+      args.url = g.url;
     }
     KNOWN_SESSIONS.add(session);
     if (action === "tab" && args.action === "list" && args.all) {
@@ -1003,6 +1044,9 @@ async function scrapeStealth(url) {
 server.tool("scrape_stealth", "Scraping stealth — camofox (anti-detection C++, cookies autenticados) → CloakBrowser (stealth legado). Passa Cloudflare/anti-bot.",
   { url: z.string().describe("URL completo") },
   async ({ url }) => {
+    const g = await guardUrl(url);
+    if (!g.ok) return { content: [{ type: "text", text: JSON.stringify({ ok: false, code: g.code, error: g.error }) }] };
+    url = g.url;
     let d = await camofoxHtml(url);
     if (!d.ok) {
       d = await scrapeStealth(url);
