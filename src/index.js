@@ -35,7 +35,7 @@ function loadConfig() {
     // v1.5.28: opencli removido — mantido para compatibilidade de config mas não utilizado
     opencliBin: "",  // eliminado: tudo via camofox/HTTP
     windowAdapters: new Set(),  // eliminado
-    cloakPython: e("SUPER_BROWSER_CLOAK_PY", file.cloak?.python || "/Volumes/disco1tb/tools/scraping/.venv/bin/python3"),
+    cloakPython: e("SUPER_BROWSER_CLOAK_PY", file.cloak?.python || path.join(__dirname, "..", ".venv", "bin", "python3")),
     cloakMaxBytes: Number(e("SUPER_BROWSER_MAX_HTML", file.cloak?.maxHtmlBytes || 2000000)),
     searxngUrl: "", // searxng REMOVIDO 16-Ago (0 sucessos/48h) — mantido vazio para compatibilidade
     defaultSession: e("SUPER_BROWSER_SESSION", file.browser?.defaultSession || "mcp-main"),
@@ -51,9 +51,8 @@ function loadConfig() {
 }
 const CFG = loadConfig();
 
-// v1.5.28: opencli/oc() eliminados. node PATH mantido para futuras necessidades.
-const _nodeDir = path.dirname(process.execPath || "/Users/augustosilva/.opencode/bin/node");
-const ENV_WITH_NODE = { ...process.env, PATH: _nodeDir + ":" + (process.env.PATH || "/usr/local/bin:/usr/bin:/bin") };
+// v1.5.28: opencli/oc() eliminados. Só o execSync de configs usa env extra — já sem uso.
+// §60/§78: sem paths pessoais hardcoded (o PATH herdado é suficiente).
 
 const server = new McpServer({ name: "super-browser", version: pkg.version });
 
@@ -399,41 +398,41 @@ server.tool("finance_defi", "Top DeFi por TVL (defillama).",
   });
 
 // ---- Sentimento social (autenticado via Chrome) ----
-// camofoxSentiment (v1.5.20): X/Twitter search via camofox — timeout 35s max (evita MCP timeout 60s)
+// camofoxSentiment (v1.5.30): X search via camofox. O endpoint /search é
+// rejeitado server-side para clientes headless ("Something went wrong" —
+// verificado 11-Set: home/trending/hashtag funcionam, /search não). Rota
+// primária = /hashtag/<token> (estável). Token = 1º termo alfanumérico da
+// query ("NVDA OR NVIDIA" → NVDA). /search fica como 3º fallback, não 1º.
 async function camofoxSentiment(query, limit = 5) {
   if (!(await camofoxEnsure())) return { ok: false, camofox_skip: true };
   const deadline = Date.now() + 35000; // 35s max
+  const token = (String(query || "").match(/[A-Za-z0-9$#._-]+/g) || []).find(t => !/^(OR|AND|NOT|stock)$/i.test(t)) || String(query || "").trim().split(/\s+/)[0] || "";
   try {
-    const { tab, mk, close } = await camofoxTab("https://x.com/search?q=" + encodeURIComponent(query) + "&f=live", { wait: 9000, dismissConsent: true });
+    const { tab, mk, close } = await camofoxTab("https://x.com/hashtag/" + encodeURIComponent(token), { wait: 9000, dismissConsent: true });
     const limJ = JSON.stringify(limit || 5);
     const expr = "(() => { const arts = [...document.querySelectorAll('article[data-testid=\"tweet\"]')].slice(0," + limJ + ").map(a => ({ autor: ((a.querySelector('a[href^=\"/\"][role=\"link\"] span')||a.querySelector('a[href^=\"/\"] span')||{}).textContent||'').trim().slice(0,40), texto: ((a.querySelector('[data-testid=\"tweetText\"]')||{}).textContent||'').trim().slice(0,300) })); return { logado: !!document.querySelector('[data-testid=\"SideNav_AccountSwitcher_Button\"]'), err: document.body.innerText.includes('Something went wrong'), arts: arts.filter(t => t.texto) }; })()";
+    const read = async () => { const r = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr }); return r.result || {}; };
     let res = {};
-    const searchUrl = "https://x.com/search?q=" + encodeURIComponent(query) + "&f=live";
-    // Poll 1: live search — 4 polls × 2s max (reduced from 6)
+    // Rota 1: hashtag (4 polls × 2s)
     for (let i = 0; i < 4 && Date.now() < deadline; i++) {
-      const r = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
-      res = r.result || {};
+      res = await read();
       if (res.arts && res.arts.length > 0) break;
-      if (res.err) { await mk("POST", "/tabs/" + tab + "/navigate", { userId: CFG.camofoxUser, url: searchUrl }); await mk("POST", "/tabs/" + tab + "/wait", { userId: CFG.camofoxUser, timeout: 6000 }).catch(() => {}); }
-      await new Promise(r2 => setTimeout(r2, 2000));
+      await new Promise(r => setTimeout(r, 2000));
     }
-    // Poll 2: "Top" search (sem f=live) — only if live empty and time remains
+    // Rota 2: /search?f=live (fallback — pode estar bloqueado)
     if ((!res.arts || res.arts.length === 0) && Date.now() < deadline) {
-      await mk("POST", "/tabs/" + tab + "/navigate", { userId: CFG.camofoxUser, url: "https://x.com/search?q=" + encodeURIComponent(query) });
+      await mk("POST", "/tabs/" + tab + "/navigate", { userId: CFG.camofoxUser, url: "https://x.com/search?q=" + encodeURIComponent(query) + "&f=live" });
       await mk("POST", "/tabs/" + tab + "/wait", { userId: CFG.camofoxUser, timeout: 6000 }).catch(() => {});
       for (let i = 0; i < 3 && Date.now() < deadline; i++) {
-        const r2 = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
-        res = r2.result || {};
+        res = await read();
         if (res.arts && res.arts.length > 0) break;
-        await new Promise(r3 => setTimeout(r3, 2000));
+        await new Promise(r => setTimeout(r, 2000));
       }
     }
     await close();
     if (!res.logado) return { ok: false, camofox_skip: true, error: "x.com não autenticado no camofox" };
-    const emptyReason = (res.arts || []).length === 0
-      ? (res.err ? "fetch_error" : "no_results")
-      : null;
-    return { ok: true, engine: "camofox", n: (res.arts || []).length, items: res.arts || [], ...(emptyReason ? { empty_reason: emptyReason } : {}), query };
+    const emptyReason = (res.arts || []).length === 0 ? (res.err ? "fetch_error" : "no_results") : null;
+    return { ok: true, engine: "camofox", n: (res.arts || []).length, items: res.arts || [], ...(emptyReason ? { empty_reason: emptyReason } : {}), query, token };
   } catch (e) { return { ok: false, camofox_skip: true, error: String(e.message || e).slice(0, 120) }; }
 }
 
@@ -511,10 +510,13 @@ server.tool("social_sentiment", "Sentimento social de um ticker (X/Twitter auten
       return { content: [{ type: "text", text: JSON.stringify({ ok: true, engine: "camofox", n: cf.n, items: cf.items }) }] };
     }
     // v1.5.27: SEM FALLBACK OPENCLI — evita lançar Chrome (3GB). camofox é a única fonte.
-    return { content: [{ type: "text", text: JSON.stringify({ ok: false, engine: "camofox", camofox_error: cf.error, hint: "camofox indisponível para social_sentiment." }) }] };
+    // v1.5.30: distinguir "X bloqueou/throttlou" (degraded, fonte externa) de
+    // "camofox down" (erro nosso). Só camofox_skip=true é erro acionável.
+    const degraded = !cf.camofox_skip;
+    return { content: [{ type: "text", text: JSON.stringify({ ok: false, degraded, engine: "camofox", camofox_error: cf.error, empty_reason: cf.empty_reason, hint: degraded ? "X throttlou a sessão headless — fonte externa, não é bug do MCP." : "camofox indisponível para social_sentiment." }) }] };
   });
 
-// ---- Browser genérico (qualquer site, Chrome bridge autenticado) ----
+// ---- Browser genérico (qualquer site via camofox headless autenticado) ----
 server.tool("browser_browse", "Navega para qualquer URL e extrai conteúdo. CHAIN v1.5.28: camofox (anti-detection headless) → CloakBrowser (stealth legado). Passa Cloudflare/anti-bot.",
   { url: z.string().describe("URL completo") },
   async ({ url }) => {
@@ -553,7 +555,7 @@ server.tool("browser_browse", "Navega para qualquer URL e extrai conteúdo. CHAI
     return { content: [{ type: "text", text: JSON.stringify(result) }] };
   });
 
-// ---- AUTOMAÇÃO browser interativa (fill/click/type/select/... no Chrome bridge).
+// ---- AUTOMAÇÃO browser interativa (fill/click/type/select/... no camofox).
 //      Cobre os use cases que faltavam: preencher formulários, clicar, submetir.
 //      action mapeia 1:1 para `opencli browser <action>` (36 comandos).
 //      NOTA: `opencli browser` usa a SUA convenção de opções (--window background
@@ -568,8 +570,6 @@ const BROWSER_ACTIONS = {
   close: {}, tab: { action: "string" }, screenshot: { path: "string" },
 };
 const ACTIONS_LIST = Object.keys(BROWSER_ACTIONS);
-// argumentos posicionais (1:1 para a ordem do opencli browser) vs flags (--k v)
-const POS_ARGS = new Set(["target", "text", "option", "direction", "key", "js", "url", "path", "selector", "type", "value", "files"]);
 // Sessão browser persistente por defeito (stateful): a navegação é SEQUENCIAL
 // (open → find → fill → click → wait → extract). Se fosse stateless, cada ação
 // abria um browser novo e perdia o contexto da página. O opencli browser exige
@@ -578,61 +578,10 @@ const DEFAULT_SESSION = CFG.defaultSession;
 // P1-2 (feedback T2 15-Ago): registry de sessions usadas → tab list com args.all
 // agrega todas (cross-session), não só a master.
 const KNOWN_SESSIONS = new Set([DEFAULT_SESSION]);
-function browserExec(action, args, session, windowMode) {
-  const cmd = [action];
-  for (const [k, v] of Object.entries(args || {})) {
-    // v1.5.15 fix: session/window são params do browser_act (não flags CLI) —
-    // o caller que os passava dentro de args gerava "unknown option --session"
-    if (k === "session" || k === "window" || v === undefined || v === null || v === "") continue;
-    // tab: sub-comando posicional (tab new <url>, tab list, tab close <targetId>)
-    if (action === "tab" && (k === "action" || k === "url")) { cmd.push(String(v)); continue; }
-    if (POS_ARGS.has(k)) cmd.push(String(v));
-    else if (v === true) cmd.push("--" + k);                 // flags booleanas: --all, --failed
-    else if (v === false || v === 0) continue;               // false/0 → omitir
-    else cmd.push("--" + k, String(v));
-  }
-  // v1.5.28: browserExec mantém opencli como fallback extremo para browser_act
-  // (ações interativas: fill/click/type que camofoxAct não cobre 100%).
-  // Se opencliBin estiver vazio (config eliminado), falha rápido.
-  if (!CFG.opencliBin) return { ok: false, error: "opencli eliminado v1.5.28 — browser_act requer camofox" };
-  const flags = ["browser", session, ...cmd];
-  if (windowMode) flags.push("--window", windowMode);
-  const out = execFileSync(CFG.opencliBin, flags, {
-    timeout: CFG.timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"], env: ENV_WITH_NODE,
-  });
-  try { return JSON.parse(out); } catch { return { raw: out.slice(0, 2000) }; }
-}
-
-// browserExecAsync — versão ASSÍNCRONA (execFile) para o auth_audit:
-// o execFileSync bloqueia o event loop, então 18 sites sequenciais excederiam o
-// timeout do wrapper. execFile com timeout por chamada permite paralelismo real.
-const { execFile } = require("child_process");
-function browserExecAsync(action, args, session, windowMode, timeoutMs = 8000) {
-  return new Promise((resolve) => {
-    const cmd = [action];
-    for (const [k, v] of Object.entries(args || {})) {
-      if (v === undefined || v === null || v === "") continue;
-      if (action === "tab" && (k === "action" || k === "url")) { cmd.push(String(v)); continue; }
-      if (POS_ARGS.has(k)) cmd.push(String(v));
-      else if (v === true) cmd.push("--" + k);
-      else if (v === false || v === 0) continue;
-      else cmd.push("--" + k, String(v));
-    }
-    const flags = ["browser", session, ...cmd];
-    if (windowMode) flags.push("--window", windowMode);
-    if (!CFG.opencliBin) return resolve({ ok: false, error: "opencli eliminado v1.5.28 — browser_act requer camofox" });
-    execFile(CFG.opencliBin, flags, {
-      timeout: timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"], env: ENV_WITH_NODE,
-    }, (err, stdout) => {
-      if (err) return resolve({ ok: false, error: err.message.slice(0, 120) });
-      try { resolve(JSON.parse(stdout)); } catch { resolve({ raw: String(stdout).slice(0, 2000) }); }
-    });
-  });
-}
-server.tool("browser_act", `Executa uma ação de automação browser no Chrome bridge autenticado. Ações: ${ACTIONS_LIST.join(", ")}. Exemplos: fill (preencher formulário), click, type, select (dropdown), upload, keys, wait, eval, screenshot. STATE-FUL por defeito (sessão persistente "mcp-main"): open → fill → click funcionam em sequência na MESMA página. Para uma sessão isolada, passar session diferente. AUTH ASSISTIDA: passar window:"foreground" abre a página VISÍVEL no Chrome real do utilizador — para login manual (o utilizador preenche, o agente espera com action:"wait" e depois valida com health/whoami). window:"background" (default) é invisível.`,
-  { action: z.string().describe(`Ação: ${ACTIONS_LIST.join(" | ")}`), args: z.record(z.any()).optional().describe("Argumentos da ação (ver schema de cada ação)"), session: z.string().optional().describe("Nome da sessão browser (default mcp-main; usar diferente para isolamento)"), window: z.string().optional().describe("Modo da janela: background (default, invisível) ou foreground (VISÍVEL — para auth manual pelo utilizador)") },
+server.tool("browser_act", `Executa uma ação de automação browser na sessão camofox (headless stealth, 100% do runtime). Ações: ${ACTIONS_LIST.join(", ")}. STATE-FUL por defeito (sessão persistente mcp-main): open → fill → click funcionam em sequência na MESMA página (state recuperado server-side entre processos). Para isolamento, passar session diferente. Tabs: action "tab" com args.action=list/new/close. eval corre JavaScript na página (avançado). window:"foreground" NÃO é suportado — o camofox é headless-only; para login manual usar o camofox headed (config interactive) ou paste de credenciais no fluxo normal.`,
+  { action: z.string().describe(`Ação: ${ACTIONS_LIST.join(" | ")}`), args: z.record(z.any()).optional().describe("Argumentos da ação (ver schema de cada ação)"), session: z.string().optional().describe("Nome da sessão browser (default mcp-main; usar diferente para isolamento)"), window: z.string().optional().describe("\"background\" (default, invisível) — \"foreground\" não é suportado (camofox headless-only)") },
   async ({ action, args = {}, session = DEFAULT_SESSION, window: windowMode }) => {
-    if (!BROWSER_ACTIONS[action]) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: `Ação inválida: ${action}. Disponíveis: ${ACTIONS_LIST.join(", ")}` }) }] };
+    if (!BROWSER_ACTIONS[action]) return { content: [{ type: "text", text: JSON.stringify({ ok: false, code: "INVALID_ARGUMENT", error: `Ação inválida: ${action}. Disponíveis: ${ACTIONS_LIST.join(", ")}` }) }] };
     // ALIAS eval (feedback T2 16-Ago 00:15): aceitar code/expression/script como js —
     // 39 falhas na telemetria eram contratos errados ('code' em vez de 'js').
     if (action === "eval" && args && args.js === undefined) {
@@ -640,85 +589,58 @@ server.tool("browser_act", `Executa uma ação de automação browser no Chrome 
         if (args[alias] !== undefined) { args.js = args[alias]; delete args[alias]; break; }
       }
     }
-    // P1-2 fix (feedback T2 15-Ago): registo de sessions conhecidas → tab list pode
-    // agregar todas as sessions (verificar auto-close cross-session), não só a master.
     KNOWN_SESSIONS.add(session);
     if (action === "tab" && args.action === "list" && args.all) {
-      const out = {};
-      for (const s of KNOWN_SESSIONS) {
-        try { out[s] = browserExec("tab", { action: "list" }, s); }
-        catch { out[s] = []; }
-      }
-      return { content: [{ type: "text", text: JSON.stringify(out) }] };
+      // cross-session: uma list via camofox cobre todas as sessions do userId
+      const cf = await camofoxAct("tab", { action: "list" }, session);
+      return { content: [{ type: "text", text: JSON.stringify({ ok: cf.ok, engine: "camofox", tabs: cf.tabs || [] }) }] };
     }
-    try {
-      // v1.5.1: ENGINE camofox PRIMEIRO — stealth+auth, selector CSS nativo,
-      // sem bridge Chrome (4 dependências → 1). Se camofox falhar/skip →
-      // cai no opencli (bridge) exactamente como antes. Compat total.
-      if (!windowMode) {
-        const cf = await camofoxAct(action, args, session);
-        if (cf && cf.ok) return { content: [{ type: "text", text: JSON.stringify(cf) }] };
-      }
-      // GESTÃO DE RECURSOS NATIVA (regra user 15-Ago): limite de tabs por sessão (LRU).
-      // Ao abrir tab, se exceder maxTabs, fechar a mais antiga — nunca acumular.
-      // REGRA MASTER (user 20:10): a tab master (index 0 = tab de SESSÃO que mantém a
-      // comunicação do bridge) NUNCA pode ser fechada. Ao fazer LRU, só fecha tabs >0.
-      if (action === "tab" && args.action === "new") {
-        try {
-          const list = browserExec("tab", { action: "list" }, session);
-          const count = (String(list).match(/"index"/g) || []).length;
-          if (count >= CFG.maxTabs) {
-            // fechar a tab mais antiga de TESTE (índice >=1) — NUNCA a master (índice 0)
-            try { browserExec("tab", { action: "close", index: "1" }, session); } catch { /* LRU best-effort */ }
-          }
-        } catch { /* se não conseguir listar, abrir mesmo assim */ }
-      }
-      // BUG 1/2 fix (feedback T2 23:27): keep é flag interna (não vai ao opencli).
-      const keep = args.keep;
-      const { keep: _keep, ...execArgs } = args || {};
-      const d = browserExec(action, execArgs, session, windowMode);
-      // AUTO-CLOSE (regra user 15-Ago): ações de LEITURA consomem a info e fecham
-      // a tab IMEDIATAMENTE (minimizar tempo aberto = memória). Ações interativas
-      // (open/fill/click/type/wait) NÃO fecham — o agente precisa da sessão ativa.
-      // REGRA MASTER: o close NUNCA fecha a sessão principal se ela é a master
-      // (DEFAULT_SESSION) — fechar todas as tabs mataria a comunicação do bridge.
-      // BUG 1 fix (feedback T2 23:27): args.keep=true desativa o auto-close —
-      // permite multi-step open→eval→eval na MESMA sessão (rdk_board loop de eval).
-      const READ_ACTIONS = new Set(["extract", "state", "eval", "screenshot", "get", "tab"]);
-      // SESSÕES PROTEGIDAS (user 16-Ago): sites RDK (jira/wiki Okta) NUNCA podem ser
-      // fechados pelo auto-close — fechar mata a sessão Okta → reautenticar exige MFA
-      // do user. Keepalive mantém o cookie vivo; fechar seria catastrófico.
-      const PROTECTED_SESSIONS = new Set(["rdk", "rdk2"]);
-      if (READ_ACTIONS.has(action) && CFG.autoCloseRead && !keep) {
-        const isMaster = session === DEFAULT_SESSION || PROTECTED_SESSIONS.has(session);
-        if (!isMaster) {
-          // sessão de teste/efémera → fechar tudo
-          try { browserExec("close", {}, session); } catch { /* fechar best-effort */ }
-        }
-        // VERIFICAÇÃO END-TO-END: confirmar quantas tabs restam (master preservada)
-        let remaining = "?";
-        try {
-          const check = browserExec("tab", { action: "list" }, session);
-          remaining = String(check).match(/"index"/g) ? String(check).match(/"index"/g).length : (isMaster ? 1 : 0);
-        } catch { remaining = isMaster ? 1 : 0; }
-        // BUG 2 fix (feedback T2 23:27): eval devolve número/booleano → JSON.parse dá
-        // tipo primitivo e o spread {...d} perde o valor. Normalizar p/ {value}.
-        const payload = (typeof d === "object" && d !== null) ? d : { value: d };
-        return { content: [{ type: "text", text: JSON.stringify({ ...payload, auto_closed: !isMaster, master_preserved: isMaster, tabs_remaining: remaining }) }] };
-      }
-      return { content: [{ type: "text", text: JSON.stringify(d) }] };
-    } catch (e) {
-      // mesmo em erro, fechar a tab (não deixar órfãos)
-      try { browserExec("close", {}, session); } catch {}
-      return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: e.message }) }] };
+    // §18: foreground/manual browsing — o runtime camofox é headless-only.
+    // Resposta estruturada UNSUPPORTED (nunca um fallback silencioso).
+    if (windowMode === "foreground") {
+      return { content: [{ type: "text", text: JSON.stringify({ ok: false, code: "UNSUPPORTED", error: "window:\"foreground\" não é suportado — o camofox corre headless-only (interactiveMode off). Para login manual: cfg interactive + browser_act, ou auth_check para validação." }) }] };
     }
+    // v1.5.32: camofox ÚNICO engine (§15 — fim do fallback opencli morto).
+    // Sem camofox → falha estruturada (CloakBrowser não expõe act/eval UI flow).
+    const keep = args.keep;
+    const cf = await camofoxAct(action, args, session);
+    if (!(cf && cf.ok)) {
+      const msg = (cf && cf.error) || "ação falhou";
+      let code = "BACKEND_UNAVAILABLE", retryable = true;
+      if (cf && cf.camofox_skip) { code = "UNSUPPORTED"; retryable = false; }
+      if (/sem tab aberta/i.test(msg)) { code = "SESSION_NOT_FOUND"; retryable = false; }
+      return { content: [{ type: "text", text: JSON.stringify({ ok: false, code, engine: "camofox", error: msg, retryable }) }] };
+    }
+    // AUTO-CLOSE (regra user 15-Ago): leituras consomem a info e fecham a tab
+    // (minimizar memória). Interativas (open/fill/click/type/wait) preservam a
+    // sessão. keep=true desativa o auto-close (multi-step open→eval→eval).
+    // SESSÕES PROTEGIDAS: rdk/rdk2 nunca fechadas (sessão Okta/MFA).
+    const READ_ACTIONS = new Set(["extract", "state", "eval", "screenshot", "get", "tab"]);
+    const PROTECTED_SESSIONS = new Set(["rdk", "rdk2"]);
+    let autoClosed = false, masterPreserved = false;
+    if (READ_ACTIONS.has(action) && CFG.autoCloseRead && !keep) {
+      masterPreserved = session === DEFAULT_SESSION || PROTECTED_SESSIONS.has(session);
+      if (!masterPreserved) { await camofoxAct("close", {}, session); autoClosed = true; }
+    }
+    const payload = (typeof cf === "object" && cf !== null) ? cf : { value: cf };
+    if (autoClosed !== false || masterPreserved) { payload.auto_closed = autoClosed; payload.master_preserved = masterPreserved; }
+    return { content: [{ type: "text", text: JSON.stringify(payload) }] };
   });
 
 // ---- agent-browser (headless, sessões próprias — cobre amazon/booking/polymarket
-//      onde o opencli não tem sessão). As sessões vivem em ~/.agent-browser/<nome>.
-//      agent-browser usa a SUA convenção (--session-name, snapshot/refs). ----
-const AGENT_BIN = "/opt/homebrew/bin/agent-browser";
+//      onde o camofox não tem perfil próprio). As sessões vivem em ~/.agent-browser/<nome>.
+//      agent-browser usa a SUA convenção (--session-name, snapshot/refs).
+// §17: backend OPCIONAL (3º stack) — só existe para sites que o camofox não
+//      cobre com sessão persistida própria (amazon/booking/polymarket). Resolvido
+//      via PATH/env (AGENT_BROWSER_BIN); indisponível → UNSUPPORTED estruturado.
+const AGENT_BIN = process.env.AGENT_BROWSER_BIN || (() => {
+  for (const dir of (process.env.PATH || "").split(":")) {
+    try { fs.accessSync(path.join(dir, "agent-browser"), fs.constants.X_OK); return path.join(dir, "agent-browser"); } catch {}
+  }
+  return null;
+})();
 function agentExec(args, { timeout = CFG.timeoutMs } = {}) {
+  if (!AGENT_BIN) throw new Error("agent-browser não instalado (AGENT_BROWSER_BIN ou PATH) — usar browser_act/camofox");
   const out = execFileSync(AGENT_BIN, args, {
     timeout, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
   });
@@ -753,7 +675,8 @@ server.tool("browser_agent", "Automação browser via agent-browser (headless, s
       return { content: [{ type: "text", text: JSON.stringify({ ok: true, output: out }) }] };
     } catch (e) {
       const msg = (e.stdout || e.message || "").toString().trim();
-      return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: msg.slice(0, 300) }) }] };
+      const code = msg.includes("não instalado") ? "UNSUPPORTED" : "BACKEND_UNAVAILABLE";
+      return { content: [{ type: "text", text: JSON.stringify({ ok: false, code, error: msg.slice(0, 300), retryable: false }) }] };
     }
   });
 const CLOAK_SCRIPT = (url, maxBytes) => `
@@ -961,6 +884,14 @@ async function camofoxAct(action, args = {}, session = "mcp-main") {
     const listTabs = async () => (await mk("GET", `/tabs?userId=${CFG.camofoxUser}`)).tabs || [];
     let tid = CAMOFOX_STATEFUL[sessKey];
     if (tid && !(await listTabs()).some(t => t.tabId === tid)) { tid = null; CAMOFOX_STATEFUL[sessKey] = null; }
+    // v1.5.31: state local perde-se entre processos (cada `~/bin/super-browser`
+    // é um processo novo) → open num processo + eval no seguinte falhava
+    // ("sem tab aberta" → caía no opencli eliminado). O camofox mantém a tab
+    // server-side com listItemId=sessionKey; recuperar daí antes de desistir.
+    if (!tid) {
+      const t = (await listTabs()).find(t => t.listItemId === sessKey);
+      if (t) { tid = t.tabId; CAMOFOX_STATEFUL[sessKey] = tid; }
+    }
     switch (action) {
       case "open": {
         const r = await mk("POST", "/tabs", { userId: CFG.camofoxUser, sessionKey: sessKey, url: args.url || "about:blank" });
@@ -1156,14 +1087,6 @@ server.tool("health", "Estado do super-browser-mcp + conectividade (bridge + cam
   });
 
 // ---- Auth status (replica opencli auth status — sessões autenticadas por site) ----
-// bridgeAlive (v1.5.4): o user matou o Chrome manualmente (09-Set) e os tools
-// dependentes do bridge penduravam 90s (oc timeout) em vez de falhar rápido.
-// Probe de 10ms via pgrep — SEM arrancar o Chrome (auto-launch fica on-demand).
-function bridgeAlive() {
-  try { execFileSync("pgrep", ["-f", "Google Chrome$"], { timeout: 3000, stdio: ["ignore", "pipe", "pipe"] }); return true; }
-  catch { return false; }
-}
-
 server.tool("auth_status", "Estado de autenticação por site (camofox navigation-based). Lista quais sites têm sessão ativa.",
   {},
   async () => {
@@ -1256,36 +1179,28 @@ server.tool("auth_audit", "Audita a autenticação de TODOS os sites autenticado
       for (const s of sites) results.push({ site: s, authenticated: true, ok: true, url: AUTH_PROBES[s], checked: "known" });
       return { content: [{ type: "text", text: JSON.stringify({ total: sites.length, results }) }] };
     }
-    // modo completo: navegar cada site (paralelo em batches de 6 — o Chrome bridge
-    // satura >10 tabs; 18 sites sequenciais excederia o timeout do wrapper 60s).
-    // CHUNK 2: o Chrome bridge rejeita chamadas paralelas (recall: paralelo 3->ok=False,
-    // serial 3s=100%). Batch 4 causava "Command failed" em sites sem cache de spawn.
-    const CHUNK = 2;
-    const checkSite = async (s) => {
-      // ASYNC: execFile não bloqueia o event loop — opens lentos não travam o batch.
-      const session = s === "rdk" ? "rdk" : `authaudit-${s}-${Date.now()}`;
-      const isProtected = s === "rdk";
-      try {
-        const opened = await browserExecAsync("open", { url: AUTH_PROBES[s] }, session, "background", 8000);
-        if (opened.ok === false) return { site: s, ok: false, error: opened.error };
-        await new Promise(r => setTimeout(r, 1500));
-
-        // FIX 17-Ago (mesmo do auth_check): AccessDenied.aspx (sessão OK, permissão negada
-        // no site) não redireciona p/ login — detetar explicitamente + incluir AccessDenied
-        // body text (o URL pode ficar em AccessDenied.aspx com query longa; reforçar com o
-        // texto visível). httponly do sharepoint devolve a página, o body é a prova.
-        const st = await browserExecAsync("eval", { js: `(() => { const u = location.href; const b = document.body ? document.body.innerText.slice(0, 300) : ""; return { url: u, bodyText: b, redirected: /(login\\.rdkcentral|login\\.microsoftonline|\\/(login|accounts\\/login|signin))(\\?|\\/|$)/.test(u), accessDenied: /AccessDenied|denied\\.aspx|access denied|permiss\\w* \\w*negad|solicitou acesso|requested access/i.test(u + " " + b) }; })()` }, session, "background", 8000);
-        const d = st.raw ? JSON.parse(st.raw) : st;
-        const urlFinal = d.url || "";
-        const redirected = d.redirected === true || /(login\.rdkcentral|login\.microsoftonline|\/login)/.test(urlFinal);
-        const accessDenied = d.accessDenied === true || /(AccessDenied|denied\.aspx|access denied|permiss\w* \w*negad|solicitou acesso|requested access)/i.test(urlFinal + " " + (d.bodyText || ""));
-        if (!isProtected) { try { await browserExecAsync("close", {}, session, "background", 8000); } catch {} }
-        return { site: s, authenticated: !redirected && !accessDenied && urlFinal.length > 0, access_denied: accessDenied, ok: true, url: urlFinal.slice(0, 80), redirected };
-      } catch (e) {
-        if (!isProtected) { try { await browserExecAsync("close", {}, session, "background", 8000); } catch {} }
-        return { site: s, ok: false, error: e.message.slice(0, 60) };
-      }
-    };
+  // modo completo: navegar cada site via CAMOFOX (§102: o path antigo usava
+  // browserExecAsync de opencli — morto desde v1.5.28; v1.5.32 usa o camofox directo).
+  // Camofox abre tab efémera (sessionKey própria), navega, lê estado e fecha.
+  // Os cookies vivem no profile do camofox — fechar a tab NÃO mata a sessão.
+  const CHUNK = 2;
+  const checkSite = async (s) => {
+    try {
+      if (!(await camofoxEnsure())) return { site: s, ok: false, error: "camofox indisponível" };
+      const { tab, mk, close } = await camofoxTab(AUTH_PROBES[s], { wait: 6000, dismissConsent: true });
+      // borbor acessado de dentro: URL final + body text (AccessDenied pode não aparecer no URL)
+      const expr = '(() => { const u = location.href; const b = document.body ? document.body.innerText.slice(0, 300) : ""; return { url: u, bodyText: b, redirected: /(login\\.rdkcentral|login\\.microsoftonline|\\/(login|accounts\\/login|signin))(\\?|\\/|$)/.test(u), accessDenied: /AccessDenied|denied\\.aspx|access denied|permiss\\w* \\w*negad|solicitou acesso|requested access/i.test(u + " " + b) }; })()';
+      const r = await mk("POST", "/tabs/" + tab + "/evaluate", { userId: CFG.camofoxUser, expression: expr });
+      await close();
+      const d = r.result || {};
+      const urlFinal = d.url || "";
+      const redirected = d.redirected === true || /(login\.rdkcentral|login\.microsoftonline|\/login)/.test(urlFinal);
+      const accessDenied = d.accessDenied === true || /(AccessDenied|denied\.aspx|access denied|solicitou acesso|requested access)/i.test(urlFinal + " " + (d.bodyText || ""));
+      return { site: s, authenticated: !redirected && !accessDenied && urlFinal.length > 0, access_denied: accessDenied, ok: true, url: urlFinal.slice(0, 80), redirected };
+    } catch (e) {
+      return { site: s, ok: false, error: String(e.message || e).slice(0, 60) };
+    }
+  };
     const auditResults = [];
     for (let i = 0; i < sites.length; i += CHUNK) {
       const chunk = sites.slice(i, i + CHUNK);
@@ -1317,13 +1232,40 @@ try {
   db.exec("PRAGMA busy_timeout=3000");
   db.exec("CREATE TABLE IF NOT EXISTS calls (id INTEGER PRIMARY KEY, ts REAL, tool TEXT, ok INTEGER, latency_ms REAL, error TEXT, caller TEXT, method TEXT, params TEXT, result TEXT, source TEXT, result_type TEXT, result_summary TEXT, engine TEXT DEFAULT 'unknown')");
 } catch { db = null; }
+// §31/§107: telemetry metadata-only por defeito. NUNCA persistir conteúdos de
+// páginas (snapshots/HTML podem conter dados privados: emails, dashboards, auth).
+// SUPER_BROWSER_TELEMETRY=full mantém o payload (para debug) MAS continua a
+// redactar chaves potencialmente sensíveis (token/pass/secret/cookie/auth).
+const TELEMETRY_MODE = (process.env.SUPER_BROWSER_TELEMETRY === "full") ? "full" : "metadata";
+function redactSecrets(o) {
+  const re = /(token|password|passwd|secret|cookie|authorization|api[-_]?key|access[-_]?key)/i;
+  if (Array.isArray(o)) return o.map(redactSecrets);
+  if (o && typeof o === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(o)) {
+      if (re.test(k)) out[k] = "[REDACTED]";
+      else if (typeof v === "string" && v.length > 400) out[k] = v.slice(0, 400) + `…(+${v.length - 400})`;
+      else out[k] = redactSecrets(v);
+    }
+    return out;
+  }
+  return o;
+}
+// Corsários prev. callers usam `result` na DB como filtro (degraded/bridge_down) —
+// metadata mode guarda os primeiros 400 chars (suficiente p/ marcadores de
+// estado: ok/degraded/error/engine) + tamanho real.
 function mcpLogCall(tool, ok, ms, error, params, result) {
   if (!db) return;
   try {
     let engine = "unknown";
     const summary = (() => { try { const j = JSON.parse(result || "{}"); if (j.engine) engine = j.engine; else if (Array.isArray(j) && j.length > 0 && j[0].engine) engine = j[0].engine; else if (j.results && j.results[0] && j.results[0].engine) engine = j.results[0].engine; const eng = engine !== "unknown" ? "engine=" + engine + " · " : ""; if (Array.isArray(j)) return eng + j.length + " itens"; if (j.error) return eng + "erro: " + String(j.error).slice(0, 60); if (j.authenticated !== undefined) return eng + "authenticated=" + j.authenticated; if (j.title && j.len) return eng + j.title.slice(0, 30) + " (" + j.len + "B)"; if (j.price) return eng + "price=" + j.price; if (j.ok !== undefined) return eng + "ok=" + j.ok; return eng + Object.keys(j).slice(0, 3).map(k => k + "=" + String(j[k]).slice(0, 15)).join(", "); } catch { return (result || "").slice(0, 80); } })();
+    const stored = TELEMETRY_MODE === "full"
+      ? String(redactSecrets((result || "").slice(0, 20000)))
+      : String((result || "").slice(0, 400)) + `||len=${(result || "").length}`;
     db.prepare("INSERT INTO calls (ts, tool, ok, latency_ms, error, caller, method, params, result, source, result_type, result_summary, engine) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)").run(
-      Date.now() / 1000, tool, ok ? 1 : 0, ms, (error || "").slice(0, 300), "mcp-stdio", "mcp-direct", (params || "").slice(0, 300), (result || "").slice(0, 20000), "opencode", ok ? "ok" : "error", String(summary).slice(0, 120), engine);
+      Date.now() / 1000, tool, ok ? 1 : 0, ms, (error || "").slice(0, 300), "mcp-stdio", "mcp-direct", String(redactSecrets((params || "").slice(0, 300))), stored, "opencode", ok ? "ok" : "error", String(summary).slice(0, 120), engine);
+    // §90: bound DB — purgar registos >14 dias (rotação barata, 1x por chamada não pesa)
+    db.prepare("DELETE FROM calls WHERE ts < strftime('%s','now')-14*86400").run();
   } catch { /* logging nunca deve partir o MCP */ }
 }
 // Interceptar tools/call — registar TODAS as chamadas independentemente da fonte.

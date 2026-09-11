@@ -1,13 +1,11 @@
 #!/bin/bash
-# Wrapper: super-browser-mcp — genérico, lê paths do config.json.
-# Sem hardcoded de máquina: node e root vêm de config.json (server.node/server.root).
-# Fix PATH (15-Ago): quando invocado pelo launchd, o PATH é mínimo
-# (/usr/bin:/bin) sem node/opencli — o opencli faz `env node` internamente.
-# Exportar PATH completo para o opencli e o node funcionarem.
-export PATH="/Users/augustosilva/.opencode/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-# v1.5.11 fix (10-Set): carregar segredos — o MCP spawnado pelo opencode NÃO tem
-# CAMOFOX_ACCESS_KEY → chamadas ao camofox davam 403 Unauthorized ("sem tabId").
-source /Users/augustosilva/.config/opencode/.secrets.env 2>/dev/null
+# Wrapper: super-browser-mcp — portável (§51): sem paths pessoais hardcoded.
+# - node: resolvido do PATH (ou SUPER_BROWSER_NODE / config server.node se definido)
+# - segredos: o registo do MCP no OpenCode pode injetar env (mcp.env) — ver README.
+#   Compat: se existir ~/.config/opencode/.secrets.env, carrega CAMOFOX_ACCESS_KEY.
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+[ -f "$HOME/.config/opencode/.secrets.env" ] && . "$HOME/.config/opencode/.secrets.env" 2>/dev/null
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
-NODE="$(python3 -c "import json;print(json.load(open('$DIR/config.json')).get('server',{}).get('node','node'))" 2>/dev/null || echo node)"
-exec "$NODE" "$DIR/src/index.js" "$@"
+NODE_BIN="${SUPER_BROWSER_NODE:-node}"
+command -v "$NODE_BIN" >/dev/null 2>&1 || NODE_BIN="$(command -v node)"
+exec "$NODE_BIN" "$DIR/src/index.js" "$@"

@@ -1,18 +1,4 @@
 {
-  "opencli": {
-    "bin": "/opt/homebrew/bin/opencli",
-    "windowAdapters": [
-      "barchart",
-      "twitter",
-      "youtube",
-      "bloomberg",
-      "google",
-      "reddit",
-      "instagram",
-      "facebook"
-    ],
-    "timeoutMs": 90000
-  },
   "cloak": {
     "python": "/Volumes/disco1tb/tools/super-browser-mcp/.venv/bin/python3",
     "maxHtmlBytes": 2000000,
@@ -25,8 +11,6 @@
   },
   "server": {
     "root": "/Volumes/disco1tb/tools/super-browser-mcp",
-    "node": "/Users/augustosilva/.opencode/bin/node",
-    "tailscaleIp": "100.74.228.17",
     "sources": {
       "127.0.0.1": "local",
       "100.117.34.80": "vps-ares",
