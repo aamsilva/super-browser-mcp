@@ -29,7 +29,7 @@ else
 fi
 
 # 4. camofox (engine primário stealth)
-CAMOFOX_DIR="${CAMOFOX_DIR:-/Volumes/disco1tb/tools/camofox-browser}"
+CAMOFOX_DIR="${CAMOFOX_DIR:-$HOME/camofox-browser}"
 if [ -x "$CAMOFOX_DIR/run.sh" ] || [ -f "$CAMOFOX_DIR/server.js" ]; then
   echo "[OK] camofox: $CAMOFOX_DIR"
 else
