@@ -1,6 +1,6 @@
 {
   "name": "super-browser-mcp",
-  "version": "1.5.33",
+  "version": "1.5.34",
   "description": "MCP super-browser: runtime browser agentic para OpenCode. Camofox (Firefox stealth engine-level) como backend prim\u00e1rio headless + CloakBrowser (Chromium) como stealth fallback + HTTP/API para dados p\u00fablicos estruturados. Sessions stateful, auth por navega\u00e7\u00e3o (18 sites), snapshots sem\u00e2nticos, tool surface optimizado p/ LLM. v1.5.32: opencli/Chrome-bridge eliminados, telemetry metadata-only, auth_audit camofox, erros estruturados.",
   "main": "index.js",
   "scripts": {
