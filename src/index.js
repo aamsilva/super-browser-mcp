@@ -349,8 +349,8 @@ server.tool("finance_quote", "Cotações e dados de ações (barchart). Suporta 
   async ({ symbol }) => {
     const symbols = symbol.split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
     if (symbols.length === 0) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "sem símbolos" }) }] };
-    // v1.5.3: CAMOFOX primeiro (7.5s medido vs 21.6s opencli — mesmo preço);
-    // fallback opencli bridge se camofox indisponível/falhar. Cache 60s.
+    // v1.5.3: CAMOFOX primeiro (7.5s medido vs 21.6s no adapter antigo — mesmo preço).
+    // v1.5.32: sem fallback opencli — falha estruturada se camofox down. Cache 60s.
     const results = await Promise.all(symbols.map(sym => cached("quote:" + sym, null, async () => {
       const cf = await camofoxQuote(sym);
       if (cf.ok) return [cf];
@@ -537,7 +537,7 @@ server.tool("social_sentiment", "Sentimento social de um ticker (X/Twitter auten
   { query: z.string().describe("Query (ex: NVDA OR NVIDIA)"), limit: z.number().optional() },
   async ({ query, limit = 5 }) => {
     // v1.5.6: CAMOFOX PRIMEIRO (x.com autenticado via cookies importados) —
-    // bridge opencli é o fallback; fast-fail mantido se ambos indisponíveis.
+    // v1.5.32: sem bridge opencli — camofox + CloakBrowser apenas.
     const cf = await camofoxSentiment(query, limit);
     if (cf.ok && cf.items && cf.items.length > 0) {
       return { content: [{ type: "text", text: JSON.stringify({ ok: true, engine: "camofox", n: cf.n, items: cf.items }) }] };
@@ -559,7 +559,7 @@ server.tool("browser_browse", "Navega para qualquer URL e extrai conteúdo. CHAI
     // web read usa --url (flag, não posicional) e não aceita --window.
     // O opencli guarda o markdown em web-articles/<site>/<site>.md (cwd ou ~).
     // v1.5.0: camofox PRIMEIRO (stealth+auth, sem tocar no bridge Chrome que
-    // acumula memória); opencli web.read segue; CloakBrowser é o último recurso.
+    // acumula memória); v1.5.32 sem opencli: CloakBrowser segue como último recurso.
     const d = await cached(`browse:${url}`, null, async () => {
       const cf = await camofoxBrowse(url);
       if (cf.ok) return cf;
@@ -1092,7 +1092,7 @@ server.tool("camofox_auth_status", "Estado de autenticação da sessão camofox 
 // Decisão [VERIFICADO telemetria 48h]: google COOKIE dá 100% dos sucessos; o fallback
 // searxng devolveu 0 resultados em 48h (18 falhas todas "engines suspensas/rate-limit")
 // e adicionava ~4s de latência de tentativa morta. Removido permanentemente.
-// Cada query google abre tab no Chrome bridge — fechar após a operação (regra user).
+// Cada query google abre tab no camofox — fechar após a operação (regra user).
 server.tool("web_search", "Pesquisa web: Google via camofox (anti-detection). Devolve resultados normalizados; sinaliza erro se falhar. Cache 60s por query.",
   { query: z.string().describe("Query"), limit: z.number().optional() },
   async ({ query, limit = 5 }) => {
