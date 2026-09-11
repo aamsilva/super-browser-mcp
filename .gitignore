@@ -11,3 +11,8 @@ __pycache__/
 web-articles/
 capabilities_state.db*
 cache_state.json
+capabilities_state.db
+config.json.*.bak
+*.bak_*
+.DS_Store
+.CFUserTextEncoding
