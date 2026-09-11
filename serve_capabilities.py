@@ -37,7 +37,8 @@ def _cfg(k, d):
         return v.get("bin") if isinstance(v, dict) and "bin" in v else (v.get("url") if isinstance(v, dict) and "url" in v else v)
     except Exception:
         return d
-OPENCLI = _cfg("OPENCLI", "/opt/homebrew/bin/opencli")
+# v1.5.32: opencli removido — var mantida vazia para compat do dashboard
+OPENCLI = _cfg("OPENCLI", "")
 TAILSCALE_IP = _cfg("TAILSCALE", "100.74.228.17")
 
 # Tools expostas + exemplos de input (exemplos vêm de config.json ui.toolExamples
