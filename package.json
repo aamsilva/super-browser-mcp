@@ -26,5 +26,6 @@
   },
   "engines": {
     "node": ">=22"
-  }
+  },
+  "homepage": "https://github.com/aamsilva/super-browser-mcp#readme"
 }

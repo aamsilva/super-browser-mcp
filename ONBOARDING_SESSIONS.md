@@ -1,44 +1,45 @@
 # SUPER-BROWSER-MCP — Onboarding para sessões opencode (T1/T2/T3)
 
-> **Regra de prioridade (AGENTS.md §BROWSER STACK, reforçada 15-Ago):**
-> **TODO webscrapping, websearch e acesso web autenticado deve ser feito PRIORITARIAMENTE
-> pelo super-browser-mcp (MCP), e NÃO por opencli/stealth browser/searxng/agent-browser
-> diretamente.** O MCP agrega e centraliza; as ferramentas são backends do MCP.
+> **Regra de prioridade (AGENTS.md §BROWSER STACK):** TODO webscrapping, websearch e acesso web
+> autenticado é feito pelo **super-browser-mcp** (camofox-first). NÃO usa opencli/Chrome/searxng
+> diretamente (removidos v1.5.28+). O MCP agrega e centraliza; os backends são internos.
 
 ## O que é
-MCP server Node que agrega todas as capacidades web do Mac Mini (opencli 175 adapters,
-Chrome bridge autenticado, CloakBrowser stealth, searxng) expostas como **13 tools MCP**,
-consumíveis por opencode, VS Code, Antigravity, Cursor, e remotamente pela VPS.
+MCP server Node com **Camofox (Firefox stealth headless) como primário**, CloakBrowser como stealth
+fallback (scrape_stealth) e HTTP/API directo para dados públicos. **17 tools MCP**, sessões stateful
+por sessionKey com recuperação server-side, autenticação por evidência (AuthService), SSRF guard,
+telemetria metadata-only. Consumível por OpenCode, Claude Code, VS Code, Cursor e VPS (Tailscale).
 
 ## Acesso
-- **Repo/documentação**: `https://github.com/aamsilva/super-browser-mcp` (README + INSTALL + LOAD_TEST)
-- **Dashboard webui**: `http://100.74.228.17:8097/` (monitoria, telemetria, testes manuais por card, markup inspecionável via "Ver markup completo")
-- **Logs/traceability**: `http://100.74.208.17:8097/api/trace` (quem, source, caller, params, tempo, resultado)
+- **Repo/docs**: https://github.com/aamsilva/super-browser-mcp (README = fonte de verdade)
+- **Dashboard webui**: `http://100.74.228.17:8097/` (telemetria, perf por engine, testes manuais)
 - **Source**: `/Volumes/disco1tb/tools/super-browser-mcp/`
+- **Camofox (primário)**: `/Volumes/disco1tb/tools/camofox-browser/` (:9377, access key em .secrets.env)
 
-## As 13 tools (use cases suportados)
+## Tools — casos de uso (17)
 | Tool | Uso |
 |---|---|
-| `site_search` | Busca num site específico: youtube (search/feed/subs), twitter (trending/timeline/search/bookmarks), google (news/search/trends), reddit, bbc, hackernews |
-| `finance_quote` / `finance_options` | Preço + options chain + greeks (barchart) |
-| `finance_crypto` | Preço crypto (binance, HTTP direto) |
-| `finance_defi` | Top DeFi por TVL (defillama, HTTP direto) |
-| `social_sentiment` | Sentimento de ticker no X/Twitter (autenticado) |
-| `browser_browse` | Ler conteúdo de qualquer URL (markdown + content) |
-| `browser_act` | Automação browser: open/fill/click/type/select/keys/wait/eval/screenshot — stateful (sessão) + foreground (auth manual) |
-| `web_search` | Pesquisa web multi-motor (searxng) |
-| `scrape_stealth` | Scraping Cloudflare/anti-bot via CloakBrowser (HTML renderizado) |
-| `auth_status` | Estado de sessão por site (parser) |
-| `auth_check` | **Auth fiável**: navega p/ página só-autenticada e verifica redirect /login (o whoami NÃO é fidedigno) |
-| `health` | Estado do bridge autenticado |
+| `site_search` | Busca por site: youtube (search/feed/subs), twitter (trending/timeline), google (news/search), reddit, bbc, hackernews, defillama, barchart, github, linkedin |
+| `finance_quote` / `finance_options` | Preço + options chain + greeks (barchart via camofox) |
+| `finance_crypto` / `finance_defi` | Binance / DefiLlama (HTTP directo, sem browser) |
+| `web_search` | Pesquisa web (google → bing fallback, engine metadata) |
+| `camofox_search` | SERP Google stealth + fallback Bing |
+| `social_sentiment` | Sentimento de ticker via X (rota hashtag; degraded-aware) |
+| `browser_browse` | Ler qualquer página (snapshot semântico bounded) |
+| `browser_act` | Interacção stateful (open/fill/click/eval/…) + batch `actions[]` |
+| `scrape_stealth` | HTML renderizado detrás de anti-bot (camofox → cloakbrowser) |
+| `browser_agent` | (opcional) agent-browser para amazon/booking — env AGENT_BROWSER_BIN |
+| `auth_check` / `auth_status` / `auth_audit` | Estados de aut: VERIFIED/CACHED/UNKNOWN/EXPIRED/UNAUTHENTICATED/BLOCKED com evidence |
+| `camofox_auth_status` | Hint de cookies no perfil (nunca prova) |
+| `health` | Backends (camofox/cloak/http) + opencode serve + versão |
 
-## Como usar numa sessão
-As tools MCP aparecem como `super-browser_*` (ou `mcp__super-browser__*`) no toolset do opencode.
-Pedir em linguagem natural: "pesquisa X no YouTube", "preço da NVDA", "sentimento do TSLA no X",
-"lê esta página", "faz scrape do expresso", "verifica se o reddit está autenticado".
+## Estados de aut (nunca inventar)
+`UNKNOWN` = nunca verificado nesta corrida do MCP → **usar auth_check** antes de assumir.
+`auth_audit(refresh=false)` devolve cached/UNKNOWN honesto; `refresh=true` re-verifica (~60s).
 
-## REGRAS
-1. **SEMPRE preferir super-browser MCP** a opencli/browser direto para tarefas web.
-2. **NUNCA duplicar rotinas**: as rotinas diárias (notícias, monitoria, ARES) devem usar o MCP.
-3. **Erros → feedback**: qualquer falha/erro/use case em falta → reportar (queue) para a sessão T1 (dono do super-browser) com: tool, args, erro exato, expectativa.
-4. **Seleção de fonte**: se o MCP devolve dados, usar esses (já normalizados); NÃO re-chamar opencli.
+## Regras de convivência
+1. **Camada anti-throttle/rekurs**: site_search > web_search > browser em sites pesados (X).
+2. Rate limits: X throttlou /search p/ headless — usar social_sentiment (hashtag) em vez de browser_act no X.
+3. SSRF: URLs internas (Tailscale, RFC1918) bloqueadas — SUPER_BROWSER_ALLOW_PRIVATE=1 se de propósito.
+4. Camofox down → `health` mostra `backends.camoufox.available:false`; restart automático no próximo call (warm boot <8s).
+5. Telemetria: `capabilities_state.db` (metadata-only). Dashboard reflete só o que passou pelo MCP (stdio incluído).

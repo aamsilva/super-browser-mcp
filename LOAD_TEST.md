@@ -1,6 +1,8 @@
 # Load Test — super-browser-mcp
 
-Data: 15-Ago-2026 · Método: cliente MCP real por chamada, timeout 60s · Toolset: web_search, finance_crypto, finance_defi, health
+> **⚠️ ARQUITECTURA**: números abaixo (15-Ago-2026) foram medidos na arquitectura HISTÓRICA (opencli/Chrome bridge). Benchmark da arquitectura actual (camofox-first) pendente — os deltas conhecidos são POSITIVOS: web_search ~0.2-3s vs ~10s old, browser_act stateful ~2-18s vs BROWSER_CONNECT 91s scrapes. Fonte de verdade: telemetria dashboard (`/api/perf-engine`).
+
+Data da medição histórica: 15-Ago-2026 · Método: cliente MCP real por chamada, timeout 60s · Toolset: web_search, finance_crypto, finance_defi, health
 
 ## Resultados Funcionais
 

@@ -1,202 +1,93 @@
-# Instalação — super-browser-mcp
+# Instalação — super-browser-mcp v1.5.35
 
-Recipe completa e genérica para instalar em **qualquer computador** (Mac/Linux/WSL), não só no Mac Mini de origem. Cobre todas as dependências de 3ª parte: opencli, CloakBrowser, searxng, Chrome bridge, Node.
+Guia portável (macOS/Linux/WSL) para a arquitectura actual: **Camofox primário + CloakBrowser fallback + HTTP/API**.
 
-> ⚠️ **Requisito crítico**: este projeto **delega** em 4 serviços externos. Sem eles, só as tools stateless puras funcionam. Instalar na ordem abaixo.
+> OpenCLI, Chrome bridge e SearXNG foram **removidos** (v1.5.28+) e **não** fazem parte desta instalação.
 
----
-
-## Visão geral das dependências
-
-| # | Dependência | O que faz | Obrigatória para |
-|---|---|---|---|
-| 1 | **Node.js ≥ 22** | runtime do MCP server | tudo |
-| 2 | **opencli** | 175 adapters + Chrome bridge autenticado | finance_*, social_sentiment, browser_*, health |
-| 3 | **Chrome + extensão opencli** | sessões autenticadas (X/Google/YouTube) | adapters COOKIE, browser_act |
-| 4 | **CloakBrowser** | stealth scraping (Cloudflare) | scrape_stealth |
-| 5 | **searxng** | pesquisa web multi-motor | web_search |
-
----
-
-## 1. Pré-requisitos base
+## 1. Pré-requisitos
 
 ```bash
-# Node.js ≥ 22 (recomendado 25+)
-curl -fsSL https://deb.nodesource.com/setup_25.x | sudo -E bash - && sudo apt-get install -y nodejs   # Debian/Ubuntu
-# ou no macOS:
-brew install node
+# Node.js ≥ 22
+brew install node            # macOS
+# ou https://nodejs.org (Debian/Ubuntu: nodesource)
 
-# Python 3.10+ (para CloakBrowser e scripts auxiliares)
-# Git
+# Python 3.10+ (só para o fallback opcional CloakBrowser)
+python3 --version
 ```
 
-## 2. Instalar o projeto
+## 2. Instalar o MCP server
 
 ```bash
 git clone https://github.com/aamsilva/super-browser-mcp.git
 cd super-browser-mcp
-npm install          # instala @modelcontextprotocol/sdk + zod
-cp config.example.json config.json   # NÃO commitar config.json (tem paths locais)
+npm install
+npm run setup        # verifica node/deps/camofox, cria config, corre testes
 ```
 
-## 3. Dependência: opencli (+ Chrome bridge) — a peça nuclear
+## 3. Camofox (backend primário — obrigatório)
 
-O opencli é o que dá acesso aos 175 adapters e às sessões autenticadas.
+O runtime camofox é um projecto separado (Firefox stealth engine-level):
 
 ```bash
-# Instalar global
-npm install -g @jackwener/opencli
-
-# Verificar
-opencli --version        # deve devolver versão
-opencli list | wc -l     # deve devolver ~175 adapters
-
-# O daemon (bridge browser persistente)
-opencli daemon status    # se não estiver a correr:
-opencli daemon restart
+git clone https://github.com/nicedayzhu/camofox-browser "$CAMOFOX_DIR"  # ex: ~/camofox-browser
+cd "$CAMOFOX_DIR" && npm install
 ```
 
-### Chrome + extensão opencli (para sessões autenticadas)
-
-Os adapters COOKIE (X/Twitter, YouTube, Google, Reddit) precisam de um Chrome com a extensão opencli conectada:
-
-1. Instalar Chrome
-2. Carregar a extensão opencli (gerada em `~/.opencli/` após `opencli browser init` ou pela extensão oficial)
-3. **Autenticar** manualmente os sites desejados numa janela Chrome com a extensão ligada (login no X, YouTube, Gmail, etc.)
-4. Verificar: `opencli youtube whoami` → `{"logged_in": true}`
-
-> **Importante**: o bridge Chrome é o que mantém as sessões. Fechar as tabs de sessão mata os cookies. A auth é por-utilizador — cada máquina tem os seus logins.
-
-## 4. Dependência: CloakBrowser (stealth, para scrape_stealth)
+Configurar caminho no MCP via env (nunca hardcoded):
 
 ```bash
-# Criar venv e instalar
+export CAMOFOX_DIR="$HOME/camofox-browser"
+```
+
+O `super-browser-mcp` arranca o camofox **on demand** em `http://127.0.0.1:9377` (bind loopback, access key gerada pelo setup). Para manter o server sempre pronto, o MCP faz keep-alive a cada 5min.
+
+### Sessões autenticadas (opcional mas é a razão de existir)
+
+O camofox guarda cookies no próprio perfil (`~/.camofox/profiles/...`).
+- Importância alta: importar cookies do teu Chrome real via `chrome2camofox.py` (scripts auxiliares do autor, não fazem parte do repo core).
+- Alternativa: login assistido — navegar no camofox headed (config `interactive`) e autenticar manualmente + `clawbrowser://verify/`-equivalente via `auth_check` para provar.
+
+## 4. CloakBrowser (fallback opcional)
+
+Só necessário para `scrape_stealth` atrás de Cloudflare agressivo:
+
+```bash
 python3 -m venv .venv
-.venv/bin/pip install cloakbrowser bs4   # cloakbrowser 0.5.7
+.venv/bin/pip install cloakbrowser bs4
 ```
 
-Testar:
-```bash
-.venv/bin/python3 -c "import cloakbrowser; print('cloakbrowser OK')"
-```
+## 5. Configurar o MCP no teu cliente
 
-O `scrape_stealth` usa este venv para sites Cloudflare/anti-bot que o curl/opencli falham (403).
-
-## 5. Dependência: searxng (multi-motor, para web_search)
-
-Opção A — Docker (recomendado):
-```bash
-docker run -d -p 8081:8080 --name searxng searxng/searxng
-```
-
-Opção B — Python direto (se não tiveres Docker):
-```bash
-pip install searxng
-# ou usar um serviço searxng remoto e apontar SUPER_BROWSER_SEARXNG_URL
-```
-
-Testar:
-```bash
-curl "http://localhost:8081/search?q=test&format=json"
-```
-
-## 6. Configurar o config.json (paths locais)
-
-Edita `config.json` com os paths **da tua máquina** (nenhum hardcoded no código):
+OpenCode / Claude Code / Cursor (mcp.json):
 
 ```json
-{
-  "opencli": { "bin": "<path do opencli, ex: /opt/homebrew/bin/opencli>" },
-  "cloak": { "python": "<path do venv python, ex: /home/user/super-browser-mcp/.venv/bin/python3>" },
-  "searxng": { "url": "http://localhost:8081" },
-  "browser": { "defaultSession": "mcp-main" },
-  "server": {
-    "root": "<path do projeto>",
-    "node": "<path do node, ex: /usr/local/bin/node>",
-    "tailscaleIp": "<ip tailscale se aplicavel>"
-  }
-}
+{ "mcp": { "super-browser": {
+      "type": "local",
+      "enabled": true,
+      "command": [ "<caminho>/super-browser-mcp/bin/super-browser-mcp.sh" ],
+      "env": { "CAMOFOX_DIR": "$HOME/camofox-browser",
+               "SUPER_BROWSER_TELEMETRY": "metadata" } } } }
 ```
 
-Alternativa: **env vars** (úteis em CI/VPS):
+Env disponível (ver README): `CAMOFOX_URL`, `CAMOFOX_DIR`, `SUPER_BROWSER_SECRETS_FILE`, `SUPER_BROWSER_CLOAK_PY`, `SUPER_BROWSER_TELEMETRY`, `SUPER_BROWSER_ALLOW_PRIVATE`, `AGENT_BROWSER_BIN`.
+
+## 6. Verificar
 
 ```bash
-export SUPER_BROWSER_OPENCLI=/opt/homebrew/bin/opencli
-export SUPER_BROWSER_CLOAK_PY=/path/to/.venv/bin/python3
-export SUPER_BROWSER_SEARXNG_URL=http://localhost:8081
-```
-
-## 7. Registar numa tool MCP-client
-
-**opencode** (`~/.config/opencode/opencode.json`):
-```json
-"mcp": {
-  "super-browser": {
-    "type": "local",
-    "command": ["<path>/super-browser-mcp/bin/super-browser-mcp.sh"]
-  }
-}
-```
-
-**VS Code** (`~/Library/Application Support/Code/User/mcp.json`):
-```json
-"servers": {
-  "super-browser": {
-    "type": "stdio",
-    "command": "<path>/super-browser-mcp/bin/super-browser-mcp.sh"
-  }
-}
-```
-
-**Claude Code / Cursor / Antigravity**: ver a doc de cada tool para registar um MCP server stdio com o mesmo comando.
-
-O wrapper `bin/super-browser-mcp.sh` lê `server.node` e `server.root` do `config.json` — não precisa de edição.
-
-## 8. Verificar a instalação
-
-```bash
-# Teste integrado (handshake + 10 tools com dados reais)
 npm test
-
-# Load test rápido (30 chamadas simultâneas)
-node test/load_test.js 10 30
+# smoker real:
+cd super-browser-mcp
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | bin/super-browser-mcp.sh | head -c 200
 ```
 
-Resultado esperado:
-```
-[1] tools/list: 10 tools ✓
-[2] finance_crypto: PASS
-[3] browser stateful (open→fill→Enter→extract): PASS
-RESULTADO: TODOS PASS ✓
-```
+Health esperado: `backends.camoufox.available: true`.
 
-## 9. Dashboard (opcional)
+## Troubleshooting
 
-```bash
-python3 serve_capabilities.py    # porta 8097 (LAN/Tailscale)
-# ou via systemd/launchd com KeepAlive
-```
-
----
-
-## Troubleshooting de instalação
-
-| Sintoma | Causa | Fix |
+| Sintoma | Causa provável | Fix |
 |---|---|---|
-| `tools/list` só devolve 8 tools | versão antiga | `git pull && npm install` |
-| `finance_quote` devolve UNDEFINED | bridge Chrome sem sessão barchart | `opencli daemon restart` |
-| `social_sentiment` falha | X não autenticado no Chrome | login no X na janela com a extensão |
-| `scrape_stealth` erro `No module cloakbrowser` | venv não criado | passo 4 |
-| `web_search` timeout | searxng não a correr | `docker start searxng` |
-| `--window background` unknown option | adapter PUBLIC puro | adicionar/remover de `windowAdapters` no config |
-
----
-
-## Dependências declaradas no package.json
-
-```
-dependencies:
-  @modelcontextprotocol/sdk  ^1.30.0   (protocolo MCP)
-  zod                         ^4.4.3   (validação de schemas)
-```
-(Nenhuma lib de terceiros para dados — o acesso é via opencli/CloakBrowser/searxng.)
+| `BACKEND_UNAVAILABLE` em todo o lado | camofox down / CAMOFOX_DIR errado | arrancar camofox + verificar `health` |
+| `SECURITY_BLOCKED` em site público | DNS do host resolve IPv6 privado (rede interna) | só se intencional: `SUPER_BROWSER_ALLOW_PRIVATE=1` |
+| `SESSION_NOT_FOUND` | seq de browser_act sem `open` primeiro | `open → …` |
+| `UNSUPPORTED` com foreground | runtime é headless-only (design) | camofox interactive p/ login manual |
+| 403 do camofox | access key não injetada | env `CAMOFOX_ACCESS_KEY` ou secrets file |
