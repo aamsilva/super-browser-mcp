@@ -2,6 +2,13 @@
 
 # super-browser-mcp
 
+# super-browser-mcp — v1.5.32
+
+> **ARQUITECTURA ACTUAL (v1.5.32, 11-Set-2026):** Camofox (Firefox stealth engine-level, headless, :9377) é o ÚNICO engine de browsing. CloakBrowser = stealth fallback para scrape. HTTP/API directo para dados públicos (Binance/DefiLlama). **OpenCLI e Chrome bridge ELIMINADOS** (v1.5.28 — libertados 3GB/18 processos). **SearXNG removido** (16-Ago). Sessions stateful com recuperação server-side (sessionKey). Auth por navegação (auth_check/auth_audit camofox-only). Telemetry metadata-only (SUPER_BROWSER_TELEMETRY=full opt-in, com redacção de segredos). SSRF guard (file://, localhost, RFC1918, DNS→IP privado — escape SUPER_BROWSER_ALLOW_PRIVATE=1). Erros estruturados: UNSUPPORTED/SESSION_NOT_FOUND/BACKEND_UNAVAILABLE/SECURITY_BLOCKED.
+>
+> **As secções abaixo mencionam opencli/Chrome bridge/searxng** — descrevem a arquitectura HISTÓRICA (≤ v1.5.27). Fonte autoritativa: `src/index.js`.
+
+
 > **As super browser capabilities do Mac Mini, expostas como tools MCP.**
 > Um servidor MCP que dá a qualquer agente/ferramenta — opencode, VS Code, Antigravity, Claude Code, Cursor, ou um daemon na VPS — acesso às capacidades de browsing **autenticado** (X/Twitter, YouTube, Google), finance/trading (barchart, binance, defillama) e pesquisa multi-motor (searxng).
 
