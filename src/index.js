@@ -23,6 +23,7 @@ const { z } = require("zod");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const net = require("net");
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
 
 // ---- Config (genérico: env > config.json > default) ----
@@ -58,19 +59,26 @@ const server = new McpServer({ name: "super-browser", version: pkg.version });
 
 // ---- §33 SSRF guard: bloquear destinos internos a partir de URLs fornecidos pelo
 // LLM (metas podem vir de páginas browsadas). Escapes: SUPER_BROWSER_ALLOW_PRIVATE=1.
-const PRIVATE_RE = /^(file|ftp|unix|chrome|about|blob|data:)/i;
-function urlToIp(host) {
-  return new Promise(r => {
-    require("dns").lookup(host.replace(/^.+@/, ""), { all: true }, (e, a) => r(e ? null : (Array.isArray(a) ? a.map(x => x.address).join(",") : a)));
-  });
+function isPrivateIp(ip) {
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    if (a === 0 || a === 10 || a === 127 || a === 169 && b === 254 || a === 172 && b >= 16 && b <= 31 || a === 192 && b === 168) return true;
+    return false;
+  }
+  // IPv6: loopback ::1, ULA fc00::/7, link-local fe80::/10, IPv4-mapped ::ffff:x.y.z.w
+  const low = ip.toLowerCase();
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(low);
+  if (mapped) return isPrivateIp(mapped[1]);
+  return low === "::1" || /^f[cd][0-9a-f]{2}:/.test(low) || /^fe[89ab][0-9a-f]:/.test(low) || low === "::";
 }
 function sanitizeUrl(raw) {
   let u;
   try { u = new URL(raw); } catch { return { ok: false, code: "INVALID_ARGUMENT", error: "URL inválida: " + String(raw).slice(0, 80) }; }
   if (!/^https?:$/.test(u.protocol)) return { ok: false, code: "SECURITY_BLOCKED", error: `esquema não permitido: ${u.protocol} (só http/https)` };
   const h = u.hostname.toLowerCase();
-  const isLocal = h === "localhost" || /^\d+\.\d+\.\d+\.\d+$/.test(h) && (/^0\./.test(h) || /^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h) || /^172\.(1[6-9]|2\d|3[01])\./.test(h) || /^169\.254\./.test(h)) || h === "::1" || h === "[::1]";
-  if (isLocal && process.env.SUPER_BROWSER_ALLOW_PRIVATE !== "1") {
+  const hostPrivate = h === "localhost" || (net.isIP(h) ? isPrivateIp(h) : false);
+  if (hostPrivate && process.env.SUPER_BROWSER_ALLOW_PRIVATE !== "1") {
     return { ok: false, code: "SECURITY_BLOCKED", error: `destino privado/loopback bloqueado (SSRF): ${h}. Definir SUPER_BROWSER_ALLOW_PRIVATE=1 se intencional.` };
   }
   return { ok: true, url: u.toString() };
@@ -78,12 +86,16 @@ function sanitizeUrl(raw) {
 async function guardUrl(raw) {
   const s = sanitizeUrl(raw);
   if (!s.ok) return s;
-  // hostname pode ser um DNS interno que resolva p/ RFC1918 — resolver e verificar
-  if (/^[a-z]/i.test(new URL(s.url).hostname)) {
-    const ip = await urlToIp(new URL(s.url).hostname);
-    if (ip && !process.env.SUPER_BROWSER_ALLOW_PRIVATE) {
-      const p = sanitizeUrl("http://" + ip);
-      if (!p.ok) return { ok: false, code: "SECURITY_BLOCKED", error: `${new URL(s.url).hostname} → ${ip} é destino privado (SSRF). SUPER_BROWSER_ALLOW_PRIVATE=1 se intencional.` };
+  // hostname com nome: resolver e verificar TODOS os addresses (qualquer um
+  // privado → bloqueia; §33 a variante "DNS rebind" também fica coberta)
+  const host = new URL(s.url).hostname;
+  if (net.isIP(host) === 0) {
+    const IPs = await new Promise(r => {
+      require("dns").lookup(host.replace(/^.+@/, ""), { all: true }, (e, a) => r(e ? [] : a));
+    });
+    if (IPs.length && process.env.SUPER_BROWSER_ALLOW_PRIVATE !== "1") {
+      const bad = IPs.find(x => isPrivateIp(x.address));
+      if (bad) return { ok: false, code: "SECURITY_BLOCKED", error: `${host} → ${bad.address} é destino privado (SSRF). SUPER_BROWSER_ALLOW_PRIVATE=1 se intencional.` };
     }
   }
   return s;
