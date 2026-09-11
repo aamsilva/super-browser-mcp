@@ -1141,12 +1141,16 @@ server.tool("web_search", "Pesquisa web: Google via camofox (anti-detection). De
 server.tool("health", "Estado do super-browser-mcp + conectividade (bridge + camofox).",
   {},
   async () => {
-    // v1.5.27: SEM OPENCLI — bridge_auth detectado por bridgeAlive() (pgrep Chrome).
-    // YouTube whoami removido — evita lançar Chrome (3GB).
-    const bridgeUp = bridgeAlive();
+    // v1.5.28: SEM OPENCLI/CHROME — health = camofox + serve. bridge eliminado.
+    const cf = await camofoxHealth();
+    let serveUp = false;
+    try {
+      const r = await fetch("http://127.0.0.1:4096/", { signal: AbortSignal.timeout(2000) });
+      serveUp = true; // 401 = aut (OK)
+    } catch { serveUp = false; }
     return { content: [{ type: "text", text: JSON.stringify({
-      ok: true, bridge_auth: bridgeUp ? "up" : "down", degraded: !bridgeUp,
-      camofox: await camofoxHealth() ? "up" : "down",
+      ok: true, bridge_auth: "removed (v1.5.28)", degraded: !cf,
+      camofox: cf ? "up" : "down", opencode_serve: serveUp ? "up" : "down",
       version: pkg.version, time: new Date().toISOString(),
     }) }] };
   });

@@ -111,12 +111,11 @@ def log_call(tool, ok, ms, error="", caller="webui", method="mcp-stdio", params=
     conn.commit()
 
 def state_snapshot():
-    """Estado vivo: bridge, serve, call stats."""
-    def bridge_auth():
+    """Estado vivo: camofox, serve, call stats. (v1.5.28: bridge/opencli removido)"""
+    def camofox_up():
         try:
-            r = subprocess.run([OPENCLI, "youtube", "whoami", "--window", "background", "--format", "json"], capture_output=True, text=True, timeout=8)
-            d = json.loads(r.stdout)
-            return d.get("logged_in", False)
+            r = subprocess.run(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "3", "http://127.0.0.1:9377/health"], capture_output=True, text=True, timeout=5)
+            return r.stdout.strip() == "200"
         except Exception:
             return False
     def serve():
@@ -131,7 +130,7 @@ def state_snapshot():
     p50 = lats[len(lats)//2] if lats else 0
     p95 = lats[int(len(lats)*0.95)] if lats else 0
     return {
-        "bridge_auth": bridge_auth(),
+        "camofox_up": camofox_up(),
         "opencode_serve": serve(),
         "calls_total": total,
         "calls_ok": ok_n,
@@ -276,7 +275,7 @@ pre{background:var(--surface);border:1px solid var(--border);border-radius:var(-
 <script>
 async function snap(){try{const r=await fetch('/api/state');const s=await r.json();
 document.getElementById('st').innerHTML=`<div class="grid">
-<div class="kpi"><div class="l">Chrome bridge</div><div class="v"><span class="dot ${s.bridge_auth?'ok':'fail'}"></span>${s.bridge_auth?'OK':'DOWN'}</div></div>
+<div class="kpi"><div class="l">Camofox</div><div class="v"><span class="dot ${s.camofox_up?'ok':'fail'}"></span>${s.camofox_up?'OK':'DOWN'}</div></div>
 <div class="kpi"><div class="l">opencode serve</div><div class="v"><span class="dot ${s.opencode_serve?'ok':'fail'}"></span>${s.opencode_serve?'OK':'DOWN'}</div></div>
 <div class="kpi"><div class="l">Chamadas</div><div class="v">${s.calls_total}</div></div>
 <div class="kpi"><div class="l">Erros</div><div class="v" style="color:${s.calls_fail>0?'var(--fail)':'inherit'}">${s.calls_fail}</div></div>
