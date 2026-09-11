@@ -1,3 +1,5 @@
+> **⚠️ ARCHITECTURE (v1.5.32)** — Camofox é o único browser engine (headless stealth). OpenCLI/Chrome bridge/SearXNG foram ELIMINADOS (v1.5.28-32). CloakBrowser permanece como stealth fallback em scrape_stealth; HTTP/API directo para dados públicos. As secções abaixo referem a arquitetura pré-v1.5.28 (histórico).
+
 # super-browser-mcp
 
 > **As super browser capabilities do Mac Mini, expostas como tools MCP.**
